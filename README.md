@@ -84,7 +84,6 @@ python -B tests/run_checks.py
 
 - [完整操作与代码结构](docs/USAGE.md)
 - [空白配置说明](configs/examples/README.md)
-- [如何发布到GitHub](docs/PUBLISH.md)
 - [参与修改](CONTRIBUTING.md)
 - [来源与第三方依赖](THIRD_PARTY_NOTICES.md)
 
