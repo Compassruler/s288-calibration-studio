@@ -1,0 +1,4 @@
+pyserial>=3.5,<4
+numpy>=1.26,<3
+Pillow>=10,<13
+mujoco>=3.2,<4
