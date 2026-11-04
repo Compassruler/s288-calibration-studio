@@ -31,7 +31,7 @@ class PreparedRenderer(FakeRenderer):
         PreparedRenderer.compile_threads.append(threading.get_ident())
         return object()
 
-    def __init__(self, model, prepared=None):
+    def __init__(self, model, prepared=None, size=None):
         PreparedRenderer.render_threads.append(threading.get_ident())
         super().__init__(model)
 
@@ -132,6 +132,24 @@ class EmbeddedPreviewTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.viewer.display_angles["hip"], 0)
         self.errors.assert_not_called()
+
+    def test_compact_preview_status_wrap_does_not_resize_viewport(self):
+        self.viewer.close()
+        self.app.compact_robot_view = self.app.central_robot_view = True
+        self.viewer = view.RobotView(self.app, parent=self.host)
+        self.wait_ready()
+        self.root.geometry("500x700")
+        self.root.deiconify()
+        self.root.update()
+        viewport = self.viewer.picture.master
+        original = (viewport.winfo_x(), viewport.winfo_y(), viewport.winfo_width(), viewport.winfo_height())
+        footer_height = self.viewer.footer.winfo_height()
+        for message in ("结构就绪", "目标预览 +20.0° · 实际反馈 +0.0° · 模拟示例绑定，与实机 ID 无关",
+                        "反馈过期／异常，冻结：0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"):
+            self.viewer.status.set(message)
+            self.root.update_idletasks()
+            self.assertEqual((viewport.winfo_x(), viewport.winfo_y(), viewport.winfo_width(), viewport.winfo_height()), original)
+            self.assertEqual(self.viewer.footer.winfo_height(), footer_height)
 
     def test_demo_defaults_link_missing_ids_without_saving_temporary_examples(self):
         self.assertEqual(set(self.viewer.bindings), {"14", "0"})

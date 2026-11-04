@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from config import default_profiles, load_profiles, parse_ids, save_profiles, validate_profile
-from controller import Controller
+from controller import Controller, HOME_TOLERANCE_DEG
 from deployment import apply_layout, build_calibration, load_layout, write_calibration
 from protocol import validate_baudrate
 from ui import ACTION_STYLES, build_ui, refresh_chrome, update_options, update_text
@@ -50,6 +50,7 @@ class CalibratorApp:
         self.homing = False
         self.holding_ids = set()
         self._capture_save_id = None
+        self._capture_all_ids = None
         self.path_override = config_path
         self.config_path = self._default_path(demo)
         self.demo = tk.BooleanVar(value=demo)
@@ -79,6 +80,7 @@ class CalibratorApp:
         self._build()
         self._refresh_ports()
         self._load_initial()
+        self._show_global_gains()
         self._show_profile()
         self.robot_host.bind("<Map>", lambda _: self._ensure_robot_view(), add="+")
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -169,7 +171,9 @@ class CalibratorApp:
             # 这里只表示已提交；完成/失败仍由 _handle 的实际反馈确认。
             pending = {
                 "connect": "正在连接设备…", "arm": "正在使能当前舵机…",
-                "capture_zero": "正在读取并保存当前零位…", "home": "正在检查并返回保存零位…",
+                "capture_zero": "正在读取并保存当前零位…",
+                "capture_all_zero": "正在读取全部已连接舵机的零位…",
+                "home": "正在检查并返回保存零位…",
                 "hold": "正在请求保持当前位置…", "release": "正在请求释放当前舵机…",
                 "release_all": "正在请求全部零力矩…",
                 "disconnect": "正在取消连接…" if self.connecting else "正在断开连接…",
@@ -258,6 +262,7 @@ class CalibratorApp:
         self.path_text.set(f"配置：{self.config_path.name}")
         self.snapshots.clear()
         self._load_initial()
+        self._show_global_gains()
         self._show_profile()
         self._ensure_robot_view()
 
@@ -287,7 +292,7 @@ class CalibratorApp:
         if next_id == self.selected:
             return
         # 结果返回前不能换 ID，否则旧舵机可能已使能、界面却切到了新舵机。
-        if self._arm_pending or self._capture_save_id is not None:
+        if self._arm_pending or self._capture_save_id is not None or self._capture_all_ids is not None:
             self.tree.selection_set(str(self.selected))
             self._log("正在等待使能或记录结果，请稍候再切换舵机。")
             return
@@ -309,7 +314,7 @@ class CalibratorApp:
         p = self.profiles[self.selected]
         self.joint_title.configure(text=f"ID {self.selected:02d} · {p['name']}")
         for key, var in self.fields.items():
-            if key in {"model_joint", "model_direction"}:
+            if key in {"model_joint", "model_direction", "kp", "kd"}:
                 continue
             if key == "follow_mode":
                 var.set("直接跟随" if p["direct_follow"] else "限速移动")
@@ -323,6 +328,34 @@ class CalibratorApp:
         self._sync_target(self.requested_deg)
         self._model_binding_changed()
         self._preview_model_joint()
+
+    def _show_global_gains(self):
+        """Changing the selected ID never resets the shared gain inputs."""
+        p = self.profiles[self.selected]
+        self._global_gains = p["kp"], p["kd"]
+        self.fields["kp"].set(f"{p['kp']:g}")
+        self.fields["kd"].set(f"{p['kd']:g}")
+
+    def _profiles_with_gains(self, profiles):
+        kp, kd = float(self.fields["kp"].get()), float(self.fields["kd"].get())
+        updated = {mid: validate_profile(dict(profile, kp=kp, kd=kd))
+                   for mid, profile in profiles.items()}
+        return updated, (kp, kd)
+
+    def _apply_global_gains(self):
+        if self._control_busy() or self.connecting or self.closing:
+            self._error(ValueError("请先全部释放并等待操作完成，再统一应用 Kp / Kd。"))
+            return
+        try:
+            updated, gains = self._profiles_with_gains(self.profiles)
+            # Only commit the shared values after the entire configuration is safely written.
+            save_profiles(self.config_path, updated, simulation=self.demo.get())
+        except (ValueError, TypeError, OSError) as exc:
+            self._error(exc)
+            return
+        self.profiles, self._global_gains, self.dirty = updated, gains, False
+        self._log(f"全部 {len(updated)} 台舵机统一 Kp={gains[0]:g}、Kd={gains[1]:g}，已保存。")
+        self._render()
 
     def _apply_profile(self, silent=False):
         if self._control_busy():
@@ -344,9 +377,11 @@ class CalibratorApp:
             if follow_mode not in {"直接跟随", "限速移动"}:
                 raise ValueError("目标跟随只能选择“直接跟随”或“限速移动”。")
             p["direct_follow"] = follow_mode == "直接跟随"
-            for key in ("min_deg", "max_deg", "kp", "kd", "rate_deg_s"):
+            for key in ("min_deg", "max_deg", "rate_deg_s"):
                 p[key] = float(self.fields[key].get())
             p = validate_profile(p)
+            updated, gains = self._profiles_with_gains(self.profiles)
+            gains_changed = gains != self._global_gains
             for mid, other in self.profiles.items():
                 if mid == self.selected:
                     continue
@@ -371,7 +406,11 @@ class CalibratorApp:
                     # 先完成绑定保存，再提交内存设置；绑定失败时保留原控制参数。
                     self.robot_view.set_binding(self.selected, key, display_direction)
                     self._log(f"ID {self.selected} 模型关节和显示方向已保存。")
-            if p != old:
+            if p != old or gains_changed:
+                if gains_changed:
+                    p.update(kp=gains[0], kd=gains[1])
+                    self.profiles = updated
+                    self._global_gains = gains
                 self.profiles[self.selected] = p
                 self.dirty = True
                 self._log(f"ID {self.selected} 设置已应用；请保存配置。")
@@ -502,7 +541,7 @@ class CalibratorApp:
 
     def _control_busy(self):
         return (self._arm_pending or self.armed_id is not None or self.homing or bool(self.holding_ids)
-                or self._capture_save_id is not None)
+                or self._capture_save_id is not None or self._capture_all_ids is not None)
 
     def _capture_zero(self):
         if self._control_busy():
@@ -511,6 +550,16 @@ class CalibratorApp:
             return
         self._capture_save_id = self.selected
         self._send("capture_zero", id=self.selected)
+
+    def _capture_all_zero(self):
+        if not self.connected or self.faulted or self._control_busy() or self.closing:
+            self._error(ValueError("请先连接设备并全部释放，将机构固定在零位支架上，再记录全部零位。"))
+            return
+        if not self.monitored or not self._apply_profile(silent=True):
+            return
+        self._capture_all_ids = tuple(sorted(self.monitored))
+        self._send("capture_all_zero", ids=list(self._capture_all_ids))
+        self._render()
 
     def _home_current(self):
         self._begin_home([self.selected])
@@ -530,6 +579,8 @@ class CalibratorApp:
                 raise ValueError(f"已标定 ID {missing} 未连接，请修改顶部 ID 后重连。")
             if any(self.profiles[mid]["zero_offset"] is None for mid in motor_ids):
                 raise ValueError("当前舵机尚未记录零位。")
+            if not self._apply_profile(silent=True):
+                return
             self._cancel_slider()
             self.homing = True
             self.home_text.set("正在检查零位、限位和设备状态…")
@@ -616,6 +667,7 @@ class CalibratorApp:
         loaded = load_profiles(path, simulation=self.demo.get())
         self.profiles = loaded
         self.dirty = False
+        self._show_global_gains()
         self._show_profile()
         self._log(f"已加载：{path}。加载配置没有下发运动目标。")
 
@@ -728,6 +780,34 @@ class CalibratorApp:
                     self._log(f"ID {mid} 的0°已保存至 {self.config_path.name}。")
                 except (OSError, ValueError) as exc:
                     self._error(exc)
+        elif kind == "captured_all":
+            expected, self._capture_all_ids = self._capture_all_ids, None
+            if expected is None:
+                return
+            try:
+                captures = event["captures"]
+                ids = [capture["id"] for capture in captures]
+                if len(ids) != len(expected) or set(ids) != set(expected):
+                    raise ValueError("全部零位反馈不完整，未保存任何新零位。")
+                updated = {mid: dict(profile) for mid, profile in self.profiles.items()}
+                for capture in captures:
+                    motor_id = capture["id"]
+                    updated[motor_id].update(zero_offset=capture["zero_offset"],
+                        reference_expos=capture["expos"], calibrated_at=capture["calibrated_at"], verified=False)
+                    updated[motor_id] = validate_profile(updated[motor_id])
+                save_profiles(self.config_path, updated, simulation=self.demo.get())
+            except (KeyError, ValueError, TypeError, OSError) as exc:
+                self._error(exc)
+                return
+            self.profiles, self.dirty = updated, False
+            if self.selected in expected:
+                self._sync_target(0)
+            self._show_profile()
+            self.home_text.set(f"全部 {len(expected)} 台零位已记录并保存 · 回零容差 ±{HOME_TOLERANCE_DEG:g}°")
+            self._log(f"已一次记录并保存全部 {len(expected)} 台已连接舵机的零位；未下发运动目标。")
+        elif kind == "capture_cancelled":
+            self._capture_all_ids = None
+            self._log(event["message"])
         elif kind == "home_state":
             self.homing = event["active"]
             self.holding_ids = set(event["holding_ids"])
@@ -743,6 +823,7 @@ class CalibratorApp:
             self.homing = False
             self.holding_ids.clear()
             self._capture_save_id = None
+            self._capture_all_ids = None
             self.connection_text.set("已断开" if event["confirmed"] else "已断开 · 释放未确认")
             self._log("连接已关闭。" if event["confirmed"] else "连接已关闭；设备是否释放未得到确认。")
             if self.closing and not event["confirmed"]:
@@ -751,6 +832,7 @@ class CalibratorApp:
             self._arm_pending = False
             self._cancel_slider()
             self._capture_save_id = None
+            self._capture_all_ids = None
             self.connecting = False
             if not self.connected:
                 self.connection_text.set("连接未完成")
@@ -851,6 +933,7 @@ class CalibratorApp:
         update_options(self.release_button, state="normal" if self.connected and self.selected in self.monitored and not batch else "disabled")
         update_options(self.stop_button, state="normal" if self.connected else "disabled")
         update_options(self.capture_button, state="normal" if fresh and not control_busy and available else "disabled")
+        update_options(self.capture_all_button, state="normal" if available and not control_busy and self.monitored else "disabled")
         update_options(self.verify_button, state="normal" if fresh and not control_busy and available and self.profiles[self.selected]["zero_offset"] is not None else "disabled")
         ready = available and not control_busy
         update_options(self.current_home_button, state="normal" if ready and fresh and self.profiles[self.selected]["zero_offset"] is not None else "disabled")
@@ -865,6 +948,7 @@ class CalibratorApp:
             update_options(widget, state="disabled" if disabled else "readonly"
                            if model_field or key in {"direction", "follow_mode"} else "normal")
         update_options(self.apply_button, state="disabled" if control_busy else "normal")
+        update_options(self.apply_gains_button, state="disabled" if control_busy or self.connecting or self.closing else "normal")
         deployment_idle = self._deployment_idle()
         update_options(self.import_deployment_button, state="normal" if deployment_idle else "disabled")
         update_options(self.export_deployment_button,

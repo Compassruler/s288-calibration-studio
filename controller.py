@@ -14,6 +14,7 @@ from config import validate_profile
 
 FEEDBACK_MAX_AGE_S = 0.25  # 主机反馈有效期；超时后不能继续发送位置驱动。
 ACTIVE_LIMIT_MARGIN_DEG = 2.0  # 仅容纳运行中的小幅跟随超调，不放宽目标角度限位。
+HOME_TOLERANCE_DEG = 2.0  # 回零验收允许的实测位置偏差；控制目标仍是精确的已保存零位。
 
 
 class HomeTimeout(Exception):
@@ -311,22 +312,69 @@ class Controller(threading.Thread):
             raise ValueError("请先释放舵机，再记录软件零位")
         if self.faulted:
             raise ValueError("存在未解除的通信异常，不能记录零位")
-        latest = self._require_fresh(motor_id)
         now = time.monotonic()
-        samples = [sample for sample in self.history[motor_id] if now - sample["timestamp"] <= 0.65]
+        samples = [sample for sample in self.history[motor_id]
+                   if 0 <= now - sample["timestamp"] <= 0.65]
+        capture = self._zero_record(motor_id, samples)
+        self._emit("captured", **capture)
+        self._emit("status", message=f"ID {motor_id} 的软件零位已记录；请保存配置")
+
+    def _zero_record(self, motor_id, samples):
+        latest = self._require_fresh(motor_id)
         if len(samples) < 10 or samples[-1]["timestamp"] - samples[0]["timestamp"] < 0.4:
-            raise ValueError("请保持关节静止至少约半秒，等待稳定采样")
+            raise ValueError(f"ID {motor_id}：请保持关节静止至少约半秒，等待稳定采样")
         if any(not self._healthy(sample) or abs(sample["speed"]) >= 0.03 for sample in samples):
-            raise ValueError("关节仍在运动或状态异常，不能记录零位")
+            raise ValueError(f"ID {motor_id}：关节仍在运动或状态异常，不能记录零位")
         positions = [sample["raw_pos"] for sample in samples]
         if max(positions) - min(positions) > math.radians(0.2):
-            raise ValueError("角度尚未稳定，不能记录零位")
+            raise ValueError(f"ID {motor_id}：角度尚未稳定，不能记录零位")
         zero = sum(positions) / len(positions)
-        self._emit(
-            "captured", id=motor_id, zero_offset=zero, expos=latest["expos"],
+        if abs(zero) > POSITION_LIMIT or not 0 <= latest["expos"] <= 2 * math.pi:
+            raise ValueError(f"ID {motor_id}：零位或输出编码器参考值超出协议范围")
+        return dict(
+            id=motor_id, zero_offset=zero, expos=latest["expos"],
             calibrated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         )
-        self._emit("status", message=f"ID {motor_id} 的软件零位已记录；请保存配置")
+
+    def _capture_all_zero(self, ids=None):
+        """Release and sample every connected motor; commit only one complete result."""
+        self._require_connected()
+        if ids is not None:
+            if not isinstance(ids, (list, tuple)) or not ids:
+                raise ValueError("全部零位记录需要完整的已连接 ID 列表")
+            for motor_id in ids:
+                self._require_connected(motor_id)
+            if len(set(ids)) != len(ids) or set(ids) != set(self.ids):
+                raise ValueError("连接 ID 列表已变化，请重新记录全部零位")
+        if self.faulted:
+            raise ValueError("存在未解除的通信异常，不能记录零位")
+        generation = self._generation
+        if not self._release_all():
+            raise ValueError("未能确认全部舵机已释放，未记录任何零位")
+        samples = {motor_id: [] for motor_id in self.ids}
+        deadline = time.monotonic() + 3
+        while True:
+            for motor_id in self.ids:
+                if self._cancel_pending():
+                    raise ValueError("全部零位记录已取消，未记录任何零位")
+                feedback = self._zero_exchange(motor_id, cancelable=True)
+                self._require_fresh(motor_id)
+                samples[motor_id].append(dict(feedback))
+                self._snapshot(motor_id)
+            if all(len(values) >= 10 and values[-1]["timestamp"] - values[0]["timestamp"] >= .4
+                   for values in samples.values()):
+                break
+            if time.monotonic() >= deadline:
+                raise ValueError("全部零位采样超时，未记录任何零位")
+            time.sleep(.02)
+        captures = [self._zero_record(motor_id, samples[motor_id]) for motor_id in self.ids]
+        # An urgent stop that arrived during validation must invalidate the
+        # entire result, just as it invalidates an older queued motion command.
+        with self._queue_lock:
+            if generation != self._generation:
+                raise ValueError("全部零位记录已取消，未记录任何零位")
+            self._emit("captured_all", captures=captures)
+        self._emit("status", message=f"已记录全部 {len(captures)} 台舵机的软件零位；请保存配置")
 
     def _require_manual_control(self):
         if self.homing or self.holding:
@@ -435,7 +483,7 @@ class Controller(threading.Thread):
 
     @staticmethod
     def _at_home(state, feedback):
-        return (abs(feedback["raw_pos"]-state["zero"]) <= math.radians(1)
+        return (abs(feedback["raw_pos"]-state["zero"]) <= math.radians(HOME_TOLERANCE_DEG) + 1e-12
                 and abs(feedback["speed"]) <= math.radians(2)
                 and abs(state["target_raw"]-state["zero"]) < 1e-9)
 
@@ -519,6 +567,8 @@ class Controller(threading.Thread):
             self._release_all()
         elif action == "capture_zero":
             self._capture_zero(motor_id)
+        elif action == "capture_all_zero":
+            self._capture_all_zero(data.get("ids"))
         elif action == "home":
             self._start_home(data.get("profiles"))
         elif action == "disconnect":
@@ -539,6 +589,9 @@ class Controller(threading.Thread):
                     except queue.Empty:
                         break
                     if generation != self._generation and action not in {"hold", "release", "release_all", "disconnect", "shutdown"}:
+                        if action == "capture_all_zero":
+                            self._emit("capture_cancelled", scope="all",
+                                       message="全部零位记录已取消，未记录任何零位")
                         continue
                     if action == "target" and sequence != self._latest_targets.get(data.get("id")):
                         continue

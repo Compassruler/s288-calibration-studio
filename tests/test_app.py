@@ -544,6 +544,93 @@ class AppIntegrationTests(unittest.TestCase):
                 self.pump_for(.15)
             self.assertEqual(self.target_calls(sent), [])
 
+    def test_shared_gains_apply_to_all_profiles_save_and_survive_id_selection(self):
+        self.app.fields["kp"].set("0.65")
+        self.app.fields["kd"].set("0.04")
+        with patch.object(self.app.controller, "send") as sent:
+            self.app.apply_gains_button.invoke()
+            sent.assert_not_called()
+        loaded = app.load_profiles(self.path, simulation=True)
+        self.assertTrue(all((p["kp"], p["kd"]) == (.65, .04) for p in loaded.values()))
+        self.assertEqual(self.app.profiles, loaded)
+        self.app.tree.selection_set("3")
+        self.pump_until(lambda: self.app.selected == 3)
+        self.assertEqual(self.app.fields["kp"].get(), "0.65")
+        self.assertEqual(self.app.fields["kd"].get(), "0.04")
+        self.errors.assert_not_called()
+
+    def test_shared_gain_save_failure_preserves_existing_profiles_and_file(self):
+        before, old_file = self.seed_saved_zeros()
+        self.app.fields["kp"].set("0.8")
+        self.app.fields["kd"].set("0.05")
+        with patch.object(app, "save_profiles", side_effect=OSError("write failed")):
+            self.app._apply_global_gains()
+        self.assertEqual(self.app.profiles, before)
+        self.assertEqual(self.path.read_bytes(), old_file)
+        self.assertIn("write failed", str(self.errors.call_args))
+
+    def test_shared_gain_invalid_pair_cannot_partially_change_any_profile(self):
+        before, old_file = self.seed_saved_zeros()
+        self.app.fields["kp"].set("0.6")
+        self.app.fields["kd"].set("nan")
+        self.app._apply_global_gains()
+        self.assertEqual(self.app.profiles, before)
+        self.assertEqual(self.path.read_bytes(), old_file)
+        self.errors.assert_called_once()
+
+    def test_shared_gain_controls_are_blocked_while_motor_is_enabled(self):
+        self.arm_demo()
+        self.assertTrue(self.app.apply_gains_button.instate(["disabled"]))
+        previous = copy.deepcopy(self.app.profiles)
+        self.app._apply_global_gains()
+        self.assertEqual(self.app.profiles, previous)
+        self.assertIn("释放", str(self.errors.call_args))
+
+    def test_all_capture_saves_every_connected_zero_and_preserves_offline_profiles(self):
+        self.app.ids.set("0,7,14")
+        self.connect_demo()
+        before, old_file = self.seed_saved_zeros()
+        poses = {0: .12, 7: -.24, 14: .36}
+        self.app.controller.bus.positions.update(poses)
+        self.app.capture_all_button.invoke()
+        self.assertEqual(self.app._capture_all_ids, (0, 7, 14))
+        self.pump_until(lambda: self.app._capture_all_ids is None and self.path.exists())
+        loaded = app.load_profiles(self.path, simulation=True)
+        for mid, pose in poses.items():
+            self.assertAlmostEqual(loaded[mid]["zero_offset"], pose)
+            self.assertFalse(loaded[mid]["verified"])
+        self.assertEqual(loaded[3], before[3])
+        self.assertEqual(Path(str(self.path)+".bak").read_bytes(), old_file)
+        self.assertEqual(self.app.profiles, loaded)
+        self.assertIsNone(self.app.controller.armed)
+        self.assertFalse(self.app.dirty)
+        self.errors.assert_not_called()
+
+    def test_all_capture_failed_save_keeps_every_previous_zero(self):
+        before, old_file = self.seed_saved_zeros()
+        self.app._capture_all_ids = (3, 14)
+        captures = [dict(id=mid, zero_offset=.2 + mid / 100, expos=.2,
+                         calibrated_at="2026-11-04T19:00:00+08:00") for mid in (3, 14)]
+        with patch.object(app, "save_profiles", side_effect=OSError("disk full")):
+            self.app._handle(dict(type="captured_all", captures=captures))
+        self.assertEqual(self.app.profiles, before)
+        self.assertEqual(self.path.read_bytes(), old_file)
+        self.assertIsNone(self.app._capture_all_ids)
+        self.assertIn("disk full", str(self.errors.call_args))
+
+    def test_incomplete_all_capture_and_cancel_keep_previous_zeros(self):
+        before, old_file = self.seed_saved_zeros()
+        self.app._capture_all_ids = (3, 14)
+        self.app._handle(dict(type="captured_all", captures=[dict(id=3, zero_offset=.2,
+            expos=.2, calibrated_at="2026-11-04T19:00:00+08:00")]))
+        self.assertEqual(self.app.profiles, before)
+        self.assertEqual(self.path.read_bytes(), old_file)
+        self.assertIsNone(self.app._capture_all_ids)
+        self.app._capture_all_ids = (3, 14)
+        self.app._handle(dict(type="capture_cancelled", scope="all", message="记录已取消"))
+        self.assertIsNone(self.app._capture_all_ids)
+        self.assertEqual(self.app.profiles, before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import font as tkfont, messagebox, ttk
 import xml.etree.ElementTree as ET
 from ui import BODY_FONT, PALETTES, FeedbackButton, show_action, theme_widget, workspace_style
 
@@ -586,10 +586,16 @@ class RobotView:
         self._refresh_bindings()
         self.footer = ttk.Frame(shell, padding=(12, 6) if compact else (16, 9), style="Plain.TFrame")
         self.footer.pack(fill="x")
+        if compact:
+            # A changing preview notice must not push the camera viewport up and down.
+            self.footer._status_lines, self.footer._status_extra_height = 3, 12
+            self.footer.configure(width=1, height=tkfont.Font(root=self.window, font=BODY_FONT).metrics("linespace") * 3 + 12)
+            self.footer.pack_propagate(False)
         self.status = tk.StringVar()
         self.status_label = ttk.Label(self.footer, textvariable=self.status, style="Muted.TLabel",
-                                      wraplength=330 if compact else 400 if self.embedded else 550)
-        self.status_label.pack(anchor="w")
+                                      wraplength=330 if compact else 400 if self.embedded else 550,
+                                      anchor="nw")
+        self.status_label.pack(anchor="w", fill="both", expand=compact)
         if not compact:
             ttk.Label(self.footer, text="拖动旋转 · 滚轮缩放 · 显示相对动作", style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
 

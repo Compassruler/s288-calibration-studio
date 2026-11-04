@@ -204,7 +204,7 @@ class ResponsiveLayout:
     def __init__(self, app, workspace, status_frames):
         self.app, self.root, self.workspace = app, app.root, workspace
         self.style = ttk.Style(self.root)
-        self.status_frames = status_frames
+        self.status_frames = list(status_frames)
         self.expanded, self.scale, self.after_id = False, 1.0, None
         self.fonts, self.styles = {}, set()
         self.columns = {key: app.tree.column(key, "width") for key in app.tree["columns"]}
@@ -217,6 +217,12 @@ class ResponsiveLayout:
         self.styles.update(name + ".Badge.TLabel" for name in PALETTES["dark"]["badges"])
         self.styles.update(ACTION_STYLES.values())
         self.register(self.root)
+        # Content must not redistribute the three workspace columns on every feedback frame.
+        # Keep their requested widths fixed; grid still expands them with the user's window.
+        self.fixed_panels = ((app.panels["control"], "pack", 290),
+                             (app.panels["settings"], "grid", 330),
+                             (app.panels["structure"], "pack", 360))
+        self._pin_panels()
         self.root.bind("<Configure>", self._resized, add="+")
         self.root.bind("<Destroy>", self._destroyed, add="+")
 
@@ -237,6 +243,8 @@ class ResponsiveLayout:
             widget = pending.pop()
             if widget.winfo_toplevel() is widget:
                 continue
+            if getattr(widget, "_status_lines", None) and widget not in self.status_frames:
+                self.status_frames.append(widget)
             if not getattr(widget, "_workspace_member", False):
                 widget._workspace_member = True
                 if isinstance(widget, ttk.Widget):
@@ -253,6 +261,14 @@ class ResponsiveLayout:
                         widget.tk.call(f"{widget}.popdown.f.l", "configure", "-font", font)
             pending.extend(widget.winfo_children())
         self._style_density()
+        self._size_status_frames()
+
+    def _size_status_frames(self):
+        line_height = self._font(self.style.lookup("Muted.TLabel", "font")).metrics("linespace")
+        self.status_frames[:] = [frame for frame in self.status_frames if frame.winfo_exists()]
+        for frame in self.status_frames:
+            frame.configure(height=line_height * getattr(frame, "_status_lines", 2)
+                            + getattr(frame, "_status_extra_height", 0))
 
     def _style_density(self):
         for name in self.styles:
@@ -267,6 +283,17 @@ class ResponsiveLayout:
             if name == "Sidebar.Treeview":
                 options["rowheight"] = round(40 * self.scale)
             self.style.configure("Workspace." + name, **options)
+
+    def _pin_panels(self):
+        for panel, manager, _ in self.fixed_panels:
+            getattr(panel, manager + "_propagate")(True)
+        self.root.update_idletasks()
+        for panel, manager, width in self.fixed_panels:
+            height = panel.winfo_reqheight()
+            if panel is self.app.panels["structure"]:
+                height = round(420 * self.scale)
+            panel.configure(width=round(width * self.scale), height=height)
+            getattr(panel, manager + "_propagate")(False)
 
     def _resized(self, event):
         if event.widget is not self.root or self.app is None or self.app.closing:
@@ -291,11 +318,10 @@ class ResponsiveLayout:
         for widget, manager, padding in self.spacing:
             factor = WIDE_SPACING_SCALE if expanded else 1
             getattr(widget, manager + "_configure")(pady=tuple(round(p * factor) for p in padding))
-        height = self._font(self.style.lookup("Muted.TLabel", "font")).metrics("linespace") * 2
-        for frame in self.status_frames:
-            frame.configure(height=height)
+        self._size_status_frames()
         for key, width in self.columns.items():
             self.app.tree.column(key, width=round(width * self.scale))
+        self._pin_panels()
         self.workspace.rowconfigure(2, weight=3 if expanded else 1)
         self.workspace.rowconfigure(5, weight=1 if expanded else 0)
 
@@ -309,6 +335,7 @@ class ResponsiveLayout:
         self.fonts.clear()
         self.spacing.clear()
         self.status_frames = ()
+        self.fixed_panels = ()
         self.app = None
 
 
@@ -541,7 +568,8 @@ def build_ui(self):
     self.disconnect_button.pack(side="right")
     self.connect_button = FeedbackButton(toolbar, text="连接设备", style="Primary.TButton", command=self._connect)
     self.connect_button.pack(side="right", padx=(12, 7))
-    self.badge = ttk.Label(header, textvariable=self.connection_text, style="Idle.Badge.TLabel")
+    self.badge = ttk.Label(header, textvariable=self.connection_text, style="Idle.Badge.TLabel",
+                           width=20, anchor="center")
     self.badge.pack(side="left", padx=(14, 0))
 
     body = ttk.Frame(workspace)
@@ -569,7 +597,8 @@ def build_ui(self):
     self.joint_title = ttk.Label(control, text="ID 14", style="Card.TLabel", width=1, anchor="w")
     self.joint_title.pack(fill="x", pady=(2, 4))
     ttk.Label(control, textvariable=self.position_caption, style="Muted.TLabel").pack(anchor="w")
-    ttk.Label(control, textvariable=self.position_text, style="Big.TLabel").pack(anchor="w")
+    ttk.Label(control, textvariable=self.position_text, style="Big.TLabel", width=8,
+              anchor="w").pack(anchor="w")
     mode_area = ttk.Frame(control, style="Plain.TFrame", height=status_height)
     mode_area.pack(fill="x", pady=(0, 4))
     mode_area.pack_propagate(False)
@@ -656,8 +685,10 @@ def build_ui(self):
     paired_fields(3, (("direction", "控制方向", ("+1", "−1")),
                       ("model_direction", "模型方向", ("+1", "−1"))))
     paired_fields(4, (("min_deg", "下限°", None), ("max_deg", "上限°", None)))
-    field("kp", "Kp / N·m/rad", 5)
-    field("kd", "Kd / N·m·s/rad", 6)
+    paired_fields(5, (("kp", "统一 Kp", None), ("kd", "Kd", None)))
+    self.apply_gains_button = FeedbackButton(settings, text="统一应用 Kp / Kd 并保存", style="Soft.TButton",
+                                             command=self._apply_global_gains)
+    self.apply_gains_button.grid(row=6, column=0, columnspan=2, sticky="we", pady=(0, 3))
     field("follow_mode", "目标跟随", 7, choices=("直接跟随", "限速移动"))
     field("rate_deg_s", "回零／限速 °/s", 8)
     field("notes", "姿态备注", 9)
@@ -709,20 +740,25 @@ def build_ui(self):
     row.pack(fill="x")
     self.capture_button = FeedbackButton(row, text="记录为0°并保存", style="Soft.TButton", command=self._capture_zero)
     self.capture_button.pack(side="left", padx=(0, 6))
+    self.capture_all_button = FeedbackButton(row, text="记录全部零位并保存", style="Primary.TButton",
+                                             command=self._capture_all_zero)
+    self.capture_all_button.pack(side="left", padx=(0, 6))
     self.verify_button = FeedbackButton(row, text="标记验证", style="Quiet.TButton", command=self._verified)
-    self.verify_button.pack(side="left", padx=(0, 16))
-    ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
-    self.current_home_button = FeedbackButton(row, text="当前回零", style="Soft.TButton", command=self._home_current)
-    self.current_home_button.pack(side="left", padx=(0, 6))
-    self.home_all_button = FeedbackButton(row, text="全部回零", style="Primary.TButton", command=self._home_all)
-    self.home_all_button.pack(side="left", padx=(0, 6))
-    self.home_stop_button = FeedbackButton(row, text="停止并释放", style="Release.TButton", command=self._cancel_home)
-    self.home_stop_button.pack(side="left")
+    self.verify_button.pack(side="left", padx=(0, 6))
     self.clear_all_zeros_button = FeedbackButton(row, text="清除全部零位", style="Release.TButton",
                                             command=lambda: self._clear_zero(all_joints=True))
     self.clear_all_zeros_button.pack(side="right")
     self.clear_zero_button = FeedbackButton(row, text="清除当前零位", style="Quiet.TButton", command=self._clear_zero)
     self.clear_zero_button.pack(side="right", padx=(6, 6))
+    home_actions = ttk.Frame(home, style="Plain.TFrame")
+    home_actions.pack(fill="x", pady=(5, 0))
+    self.current_home_button = FeedbackButton(home_actions, text="当前回零", style="Soft.TButton", command=self._home_current)
+    self.current_home_button.pack(side="left", padx=(0, 6))
+    self.home_all_button = FeedbackButton(home_actions, text="全部回零", style="Primary.TButton", command=self._home_all)
+    self.home_all_button.pack(side="left", padx=(0, 6))
+    self.home_stop_button = FeedbackButton(home_actions, text="停止并释放", style="Release.TButton", command=self._cancel_home)
+    self.home_stop_button.pack(side="left")
+    ttk.Label(home_actions, text="回零到位容差 ±2°", style="Muted.TLabel").pack(side="right")
 
     history = ttk.Frame(workspace, style="Card.TFrame", padding=(12, 8))
     history.grid(row=5, column=0, sticky="nsew", pady=(8, 0))
@@ -731,7 +767,7 @@ def build_ui(self):
     history.rowconfigure(0, weight=1)
     ttk.Label(history, text="操作日志", style="Section.TLabel").grid(
         row=0, column=0, sticky="nw", padx=(0, 16))
-    self.log = tk.Text(history, height=3, font=BODY_FONT,
+    self.log = tk.Text(history, height=2, font=BODY_FONT,
                        relief="flat", wrap="word", highlightthickness=0, padx=0, pady=0, state="disabled")
     theme_widget(self.log, background="surface", foreground="muted", insertbackground="ink",
                  selectbackground="accent", selectforeground="accent_ink")

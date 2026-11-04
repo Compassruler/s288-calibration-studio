@@ -146,6 +146,36 @@ class ResponsiveLayoutTests(unittest.TestCase):
         self.assertIsNone(self.layout.app)
         self.assertNotIn(pending, self.root.tk.call("after", "info"))
 
+    def test_feedback_status_and_preview_content_cannot_resize_workspace_modules(self):
+        with patch.object(self.application, "_ensure_robot_view"):
+            self.root.geometry("1360x940")
+            self.root.deiconify()
+            self.root.update()
+
+            def bounds():
+                return {name: (panel.winfo_x(), panel.winfo_y(), panel.winfo_width(), panel.winfo_height())
+                        for name, panel in self.application.panels.items()}
+
+            original = bounds()
+            requested = self.requested()
+            # A loaded preview or new feedback must not renegotiate its neighbors' sizes.
+            preview = ttk.Label(self.application.robot_host, text="模型状态" * 80)
+            preview.pack(fill="x")
+            for position, status in (("—", "未连接"), ("-12345.67°", "正在确认全部舵机的零位姿态…"),
+                                     ("+0.01°", "回零超时，实际位置尚未稳定到位；请检查负载与增益。")):
+                self.application.position_text.set(position)
+                self.application.home_text.set(status)
+                self.application.mode_text.set(status)
+                self.application.connection_text.set("正在请求零力矩并关闭…")
+                self.application.joint_title.configure(text="很长的已标定关节名称" * 20)
+                self.application.values["age"].set("10000 · 过期")
+                self.root.update_idletasks()
+                self.assertEqual(bounds(), original)
+                self.assertEqual(self.requested(), requested)
+            self.root.geometry("1700x1040")
+            self.root.update()
+            self.assertGreater(self.application.panels["structure"].winfo_width(), original["structure"][2])
+
 
 if __name__ == "__main__":
     unittest.main()

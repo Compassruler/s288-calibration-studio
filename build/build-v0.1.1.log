@@ -1,0 +1,104 @@
+275 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+315 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.9
+316 INFO: Python: 3.15.0 (conda)
+330 INFO: Platform: Windows-11-10.0.26200-SP0
+330 INFO: Python environment: C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv
+331 INFO: wrote C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\S288Studio.spec
+337 INFO: Removing temporary files and cleaning cache in C:\Users\Administrator\AppData\Local\Packages\sandbox.{1bef4b44-6236-4f9e-99e5-c3443958c96f}\AC\pyinstaller
+617 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio',
+ 'C:\\ProgramData\\miniconda3\\envs\\microduck\\python315.zip',
+ 'C:\\ProgramData\\miniconda3\\envs\\microduck\\lib\\python\\lib-dynload',
+ 'C:\\ProgramData\\miniconda3\\envs\\microduck\\lib\\python',
+ 'C:\\ProgramData\\miniconda3\\envs\\microduck',
+ 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv',
+ 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages',
+ 'C:\\ProgramData\\miniconda3\\envs\\microduck\\lib\\python\\site-packages',
+ 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio']
+208 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+1481 INFO: Appending 'binaries' from .spec
+1483 INFO: Appending 'datas' from .spec
+1491 INFO: checking Analysis
+1492 INFO: Building Analysis because Analysis-00.toc is non existent
+1492 INFO: Looking for Python shared library...
+1492 INFO: Using Python shared library: C:\ProgramData\miniconda3\envs\microduck\python315.dll
+1492 INFO: Running Analysis Analysis-00.toc
+1492 INFO: Target bytecode optimization level: 0
+1492 INFO: Initializing module dependency graph...
+1494 INFO: Initializing module graph hook caches...
+1537 INFO: Analyzing modules for base_library.zip ...
+198 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+198 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+204 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+3908 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4132 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+194 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+9021 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9055 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9465 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11220 INFO: Caching module dependency graph...
+11298 INFO: Analyzing C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\app.py
+11423 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+11428 INFO: TclTkInfo: initializing cached Tcl/Tk info...
+12004 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12369 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12381 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12766 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12997 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+208 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+13798 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14619 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14624 INFO: SetuptoolsInfo: initializing cached setuptools info...
+617 WARNING: Assuming this is not an Anaconda environment or an additional venv/pipenv/... environment manager is being used on top, because the conda-meta folder C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\conda-meta does not exist.
+16328 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16567 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18487 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+19047 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+23330 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+24208 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+24634 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+26059 INFO: Processing module hooks (post-graph stage)...
+26753 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+26961 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks'
+26986 INFO: Performing binary vs. data reclassification (1121 entries)
+28847 INFO: Looking for ctypes DLLs
+28946 WARNING: Library glfw3.dll required via ctypes not found
+28948 WARNING: Ignoring /System/Library/Frameworks/OpenGL.framework/OpenGL imported from C:\ProgramData\miniconda3\envs\microduck\lib\python\site-packages\mujoco\cgl\cgl.py - only basenames are supported with ctypes imports!
+28958 WARNING: Ignoring /System/Library/Frameworks/IOKit.framework/IOKit imported from C:\ProgramData\miniconda3\envs\microduck\lib\python\site-packages\serial\tools\list_ports_osx.py - only basenames are supported with ctypes imports!
+28958 WARNING: Ignoring /System/Library/Frameworks/CoreFoundation.framework/CoreFoundation imported from C:\ProgramData\miniconda3\envs\microduck\lib\python\site-packages\serial\tools\list_ports_osx.py - only basenames are supported with ctypes imports!
+28990 INFO: Analyzing run-time hooks ...
+28993 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+29000 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+29007 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+29013 INFO: Including run-time hook 'pyi_rth__tkinter.py' from 'C:\\Users\\Administrator\\Desktop\\microduck\\个人开发\\s288-calibration-studio\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+29072 INFO: Creating base_library.zip...
+29109 INFO: Looking for dynamic libraries
+30383 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\ProgramData\\miniconda3\\envs\\microduck\\lib\\python\\site-packages\\numpy.libs']
+30383 INFO: Extra DLL search directories (PATH): []
+33575 INFO: Warnings written to C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\work\S288Studio\warn-S288Studio.txt
+33664 INFO: Graph cross-reference written to C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\work\S288Studio\xref-S288Studio.html
+33764 INFO: checking PYZ
+33764 INFO: Building PYZ because PYZ-00.toc is non existent
+33764 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\work\S288Studio\PYZ-00.pyz
+34586 INFO: Building PYZ (ZlibArchive) C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\work\S288Studio\PYZ-00.pyz completed successfully.
+34613 INFO: checking PKG
+34613 INFO: Building PKG because PKG-00.toc is non existent
+34613 INFO: Building PKG (CArchive) S288Studio.pkg
+34701 INFO: Building PKG (CArchive) S288Studio.pkg completed successfully.
+34703 INFO: Bootloader C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\.build-venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+34703 INFO: checking EXE
+34703 INFO: Building EXE because EXE-00.toc is non existent
+34703 INFO: Building EXE from EXE-00.toc
+34704 INFO: Copying bootloader EXE to C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\work\S288Studio\S288Studio.exe
+34892 INFO: Copying icon to EXE
+34976 INFO: Copying 0 resources to EXE
+34976 INFO: Embedding manifest in EXE
+35040 INFO: Appending PKG archive to EXE
+35120 INFO: Fixing EXE headers
+35687 INFO: Building EXE from EXE-00.toc completed successfully.
+35720 INFO: checking COLLECT
+35720 INFO: Building COLLECT because COLLECT-00.toc is non existent
+35721 INFO: Building COLLECT COLLECT-00.toc
+41338 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+41396 INFO: Build complete! The results are available in: C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\dist
+C:\Users\Administrator\Desktop\microduck\个人开发\s288-calibration-studio\build\portable-v0.1.1\dist\S288Studio
