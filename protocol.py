@@ -9,7 +9,7 @@ import struct
 import time
 
 
-RATIO = 70070.0 / 243.0
+RATIO = 70070.0 / 243.0  # Exact ratio used by the supplied vendor Python driver.
 POSITION_LIMIT = 1428.018898
 DEFAULT_BAUDRATE = 6_000_000
 SUPPORTED_BAUDRATES = (6_000_000, 4_000_000)
@@ -120,6 +120,7 @@ class Bus:
         self.serial = serial.Serial(port.strip(), self.baudrate, timeout=0.005, write_timeout=timeout)
 
     def exchange(self, motor_id, raw_target=0.0, kp=0.0, kd=0.0, timeout_flag=1):
+        # Validate completely before touching the serial buffer or writing.
         packet = build_packet(motor_id, raw_target, kp, kd, timeout_flag)
         self.serial.reset_input_buffer()
         if self.serial.write(packet) != len(packet):

@@ -40,6 +40,8 @@
     "标准杯头内六角螺钉-81",
     "标准杯头内六角螺钉-83",
     "标准杯头内六角螺钉-84",
+    "铝壳装配无刷版本-合并修改版-12",
+    "铝壳装配无刷版本-合并修改版-5",
     "镜向left_shell-2"
   ],
   "components": [
@@ -6765,7 +6767,8 @@
         "铝壳装配无刷版本-合并修改版-10",
         "铝壳装配无刷版本-合并修改版-3"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-3"
+      "motor_component": "铝壳装配无刷版本-合并修改版-3",
+      "zero_pose_offset_rad": 5.471581436718574e-15
     },
     {
       "key": "head_pitch",
@@ -6798,7 +6801,8 @@
         "标准杯头内六角螺钉-25",
         "铝壳装配无刷版本-合并修改版-1"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-10"
+      "motor_component": "铝壳装配无刷版本-合并修改版-10",
+      "zero_pose_offset_rad": 0.043297465272405564
     },
     {
       "key": "head_yaw",
@@ -6831,7 +6835,8 @@
         "标准杯头内六角螺钉-122",
         "铝壳装配无刷版本-合并修改版-9"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-1"
+      "motor_component": "铝壳装配无刷版本-合并修改版-1",
+      "zero_pose_offset_rad": -4.821762513542798e-05
     },
     {
       "key": "head_roll",
@@ -6862,7 +6867,8 @@
         "标准杯头内六角螺钉-120",
         "铝壳装配无刷版本-合并修改版-2"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-9"
+      "motor_component": "铝壳装配无刷版本-合并修改版-9",
+      "zero_pose_offset_rad": 8.27118380048072e-15
     },
     {
       "key": "jaw",
@@ -6890,7 +6896,8 @@
         "标准杯头内六角螺钉-128",
         "深沟球轴承6700-3"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-2"
+      "motor_component": "铝壳装配无刷版本-合并修改版-2",
+      "zero_pose_offset_rad": 0.0
     },
     {
       "key": "a_hip_yaw",
@@ -6933,10 +6940,10 @@
         "标准杯头内六角螺钉-59",
         "标准杯头内六角螺钉-60",
         "标准杯头内六角螺钉-61",
-        "铝壳装配无刷版本-合并修改版-4",
-        "铝壳装配无刷版本-合并修改版-5"
+        "铝壳装配无刷版本-合并修改版-4"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-5"
+      "motor_component": "铝壳装配无刷版本-合并修改版-5",
+      "zero_pose_offset_rad": 0.0619588670169092
     },
     {
       "key": "a_hip_roll",
@@ -6963,7 +6970,8 @@
         "标准杯头内六角螺钉-52",
         "标准杯头内六角螺钉-53"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-4"
+      "motor_component": "铝壳装配无刷版本-合并修改版-4",
+      "zero_pose_offset_rad": -0.014386971429546555
     },
     {
       "key": "a_hip_pitch",
@@ -6999,7 +7007,8 @@
         "铝壳装配无刷版本-合并修改版-6",
         "铝壳装配无刷版本-合并修改版-7"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-6"
+      "motor_component": "铝壳装配无刷版本-合并修改版-6",
+      "zero_pose_offset_rad": 1.3798329776860438
     },
     {
       "key": "a_knee",
@@ -7029,7 +7038,8 @@
         "深沟球轴承6700-1",
         "铝壳装配无刷版本-合并修改版-8"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-7"
+      "motor_component": "铝壳装配无刷版本-合并修改版-7",
+      "zero_pose_offset_rad": -1.0530130762777798
     },
     {
       "key": "a_ankle",
@@ -7057,7 +7067,8 @@
         "标准杯头内六角螺钉-79",
         "标准杯头内六角螺钉-80"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-8"
+      "motor_component": "铝壳装配无刷版本-合并修改版-8",
+      "zero_pose_offset_rad": 0.3550517514766118
     },
     {
       "key": "b_hip_yaw",
@@ -7094,10 +7105,10 @@
         "标准杯头内六角螺钉-87",
         "标准杯头内六角螺钉-94",
         "标准杯头内六角螺钉-95",
-        "铝壳装配无刷版本-合并修改版-11",
-        "铝壳装配无刷版本-合并修改版-12"
+        "铝壳装配无刷版本-合并修改版-11"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-12"
+      "motor_component": "铝壳装配无刷版本-合并修改版-12",
+      "zero_pose_offset_rad": -0.06205530226765648
     },
     {
       "key": "b_hip_roll",
@@ -7124,7 +7135,8 @@
         "标准杯头内六角螺钉-92",
         "标准杯头内六角螺钉-93"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-11"
+      "motor_component": "铝壳装配无刷版本-合并修改版-11",
+      "zero_pose_offset_rad": 0.014386971429560417
     },
     {
       "key": "b_hip_pitch",
@@ -7160,7 +7172,8 @@
         "镜向left_upper_leg-3",
         "镜向upper_leg_rigidity_plate-2"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-13"
+      "motor_component": "铝壳装配无刷版本-合并修改版-13",
+      "zero_pose_offset_rad": -1.3798329776860438
     },
     {
       "key": "b_knee",
@@ -7190,7 +7203,8 @@
         "深沟球轴承6700-2",
         "铝壳装配无刷版本-合并修改版-15"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-14"
+      "motor_component": "铝壳装配无刷版本-合并修改版-14",
+      "zero_pose_offset_rad": 1.0530130762777798
     },
     {
       "key": "b_ankle",
@@ -7218,11 +7232,28 @@
         "镜向foot_left-2",
         "镜向sole_left-2"
       ],
-      "motor_component": "铝壳装配无刷版本-合并修改版-15"
+      "motor_component": "铝壳装配无刷版本-合并修改版-15",
+      "zero_pose_offset_rad": -0.3550517514766118
     }
   ],
   "notes": [
     "机械结构显示快照；实际舵机ID由使用者逐个绑定。",
-    "显示参考与软件零位、训练模型零位分别设置。"
-  ]
+    "已标定关节以支架设计姿态叠加ExPos相对软件零位的角度；未标定关节使用独立显示参考。"
+  ],
+  "compatible_bindings_sha256": [
+    "34618a5e70fbfb6e8d4f855c2bd43538dd7e8a230f85a23efe475ff733837209",
+    "729a611b7cb0191d8a959c77f4c7f59ec9cde89ad0a294c3bf40a164fcddf127"
+  ],
+  "reference_pose": {
+    "kind": "project_zero_jig_q0",
+    "source_model_sha256": "34618a5e70fbfb6e8d4f855c2bd43538dd7e8a230f85a23efe475ff733837209",
+    "jig_design_sha256": "a8a775521217e89e93e3302100d41aed5d9ec7279713e630092fba0395123390",
+    "source_model_url": "https://github.com/zj281136/microduck-s288/blob/0b0af0dae07baeeeecf8d3598f98a3d15d55f855/software/training/src/mjlab_microduck/robot/microduck/robot_walk_s288_v1.xml",
+    "method": "Static display angles relative to saved CAD assembly; encoder references unchanged",
+    "fixed_motor_housings": [
+      "铝壳装配无刷版本-合并修改版-5",
+      "铝壳装配无刷版本-合并修改版-12"
+    ],
+    "mouth_reference": "Original mouth pose retained; not defined by the 14-joint jig"
+  }
 }

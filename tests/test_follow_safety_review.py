@@ -17,8 +17,8 @@ class FollowSafetyReviewTests(unittest.TestCase):
         state = SimpleNamespace(
             connected=True, armed_id=14, selected=14, faulted=False, closing=False,
             requested_deg=18,
-            profiles={14: dict(zero_offset=zero, direction=direction)},
-            snapshots={14: dict(origin=.72, feedback=dict(timestamp=time.monotonic(), mode=1,
+            profiles={14: dict(zero_offset=zero, reference_expos=zero, direction=direction)},
+            snapshots={14: dict(origin=-42, origin_expos=.72, feedback=dict(expos=.72, timestamp=time.monotonic(), mode=1,
                                                           fault=0, warning=0, timeout=0))},
         )
         state._can_slide = lambda: CalibratorApp._can_slide(state)
@@ -26,14 +26,14 @@ class FollowSafetyReviewTests(unittest.TestCase):
 
     def test_preview_uses_motor_coordinate_with_software_direction_and_saved_zero(self):
         state = self.make_preview(.31, -1)
-        motor, raw = CalibratorApp.preview_target_raw(state)
+        motor, output = CalibratorApp.preview_target_expos(state)
         self.assertEqual(motor, 14)
-        self.assertAlmostEqual(raw, .31-math.radians(18))
+        self.assertAlmostEqual(output, (.31-math.radians(18)) % math.tau)
         self.assertEqual(state.profiles[14]["zero_offset"], .31)
 
     def test_preview_uses_connection_origin_until_calibrated(self):
         state = self.make_preview(None, 1)
-        self.assertAlmostEqual(CalibratorApp.preview_target_raw(state)[1], .72+math.radians(18))
+        self.assertAlmostEqual(CalibratorApp.preview_target_expos(state)[1], .72+math.radians(18))
 
     def test_preview_rejects_release_stale_timeout_and_fault(self):
         for change in ("release", "stale", "timeout", "fault", "future"):
@@ -49,7 +49,7 @@ class FollowSafetyReviewTests(unittest.TestCase):
                     state.snapshots[14]["feedback"]["timeout"] = 1
                 else:
                     state.faulted = True
-                self.assertIsNone(CalibratorApp.preview_target_raw(state))
+                self.assertIsNone(CalibratorApp.preview_target_expos(state))
 
     def test_direct_mode_urgent_actions_invalidate_entire_older_target_burst(self):
         for urgent in ("hold", "release"):

@@ -47,8 +47,8 @@ class ZeroReferenceTests(unittest.TestCase):
         self.serial.assert_not_called()
         self.assertEqual(self.errors, [])
 
-    def pump_until(self, condition):
-        deadline = time.monotonic() + 2
+    def pump_until(self, condition, timeout=2):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.root.update()
             if condition():
@@ -122,6 +122,68 @@ class ZeroReferenceTests(unittest.TestCase):
         self.assertIsNone(worker.armed)
         self.assertEqual(tool.profiles[14]["zero_offset"], .5)
         self.assertFalse(tool.dirty)
+        self.assertEqual(self.path.read_bytes(), self.saved)
+
+    def residual_feedback(self, degrees):
+        bus = self.application.controller.bus
+        exchange = bus.exchange
+
+        def biased(motor_id, raw_target=0, kp=0, kd=0, timeout_flag=1):
+            feedback = exchange(motor_id, raw_target, kp, kd, timeout_flag)
+            if kp:
+                position = raw_target + math.radians(degrees)
+                bus.positions[motor_id] = position
+                feedback.update(raw_pos=position, expos=position % math.tau, speed=0)
+            return feedback
+
+        return patch.object(bus, "exchange", side_effect=biased)
+
+    def test_five_degree_label_and_real_2_68_degree_residual_complete_without_redefining_zero(self):
+        tool = self.application
+        pending, texts = list(self.root.winfo_children()), []
+        while pending:
+            widget = pending.pop()
+            if "text" in widget.keys():
+                texts.append(str(widget.cget("text")))
+            pending.extend(widget.winfo_children())
+        self.assertIn("回零到位容差 ±5°", texts)
+        with self.residual_feedback(2.68):
+            tool.current_home_button.invoke()
+            self.pump_until(lambda: not tool.homing and tool.holding_ids == {14}, timeout=4)
+            self.assertIn("回零完成", tool.home_text.get())
+            self.assertAlmostEqual(float(tool.position_text.get().removesuffix("°")), 2.68, places=2)
+            self.assertAlmostEqual(float(tool.tree.item("14", "values")[3]), 2.68, places=2)
+            self.assertEqual(tool.slider_value.get(), 0)
+            self.assertEqual(float(tool.target.get()), 0)
+            self.assertAlmostEqual(tool.controller.holding[14]["target_raw"], .5)
+        self.assertEqual(tool.profiles[14]["zero_offset"], .5)
+        self.assertEqual(tool.profiles[14]["reference_expos"], .5)
+        self.assertEqual(self.path.read_bytes(), self.saved)
+        self.assertFalse(tool.faulted)
+
+    def test_exact_five_degree_boundary_completes_but_six_degrees_stays_unsettled(self):
+        tool, worker = self.application, self.application.controller
+        with self.residual_feedback(5):
+            tool.current_home_button.invoke()
+            self.pump_until(lambda: not tool.homing and tool.holding_ids == {14}, timeout=4)
+            self.assertAlmostEqual(float(tool.position_text.get().removesuffix("°")), 5, places=2)
+        tool._cancel_home()
+        self.pump_until(lambda: not tool.holding_ids and worker.armed is None)
+        with self.residual_feedback(6):
+            tool.current_home_button.invoke()
+            self.pump_until(lambda: worker.armed is not None and worker.armed.get("home_motion") is not None
+                            and worker.armed["home_elapsed"] >= worker.armed["home_motion"].duration, timeout=4)
+            endpoint = time.monotonic()
+            self.pump_until(lambda: time.monotonic()-endpoint > .3)
+            self.assertTrue(tool.homing)
+            self.assertFalse(tool.holding_ids)
+            self.assertAlmostEqual(tool._joint_angle(14, worker.feedback[14]["expos"]), 6, places=2)
+            worker.homing["deadline"] = time.monotonic()-1
+            self.pump_until(lambda: not tool.homing and "回零超时" in tool.home_text.get())
+        self.assertTrue(tool.connected)
+        self.assertFalse(tool.faulted)
+        self.assertIsNone(worker.armed)
+        self.assertFalse(tool.holding_ids)
         self.assertEqual(self.path.read_bytes(), self.saved)
 
 

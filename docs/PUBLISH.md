@@ -1,25 +1,35 @@
-# 发布到GitHub
+# 源码与发布范围
 
-建议仓库名：`s288-calibration-studio`。本文件夹是Windows源码公开版，版本起点为`v0.1.0`。
+当前版本统一为`v0.1.2`。源码仓库、通用软件包与保留本机参数的个人升级包用途不同。
 
-1. 阅读`README.md`、`LICENSE`和`THIRD_PARTY_NOTICES.md`，按自己的维护方式确认项目简介及署名。
-2. 在本目录运行`python -B tests/run_checks.py`，并双击“模拟体验.bat”检查界面。GitHub核心检查不能代替这一步。
-3. 使用GitHub Desktop添加本项目目录；若提示尚未初始化，按提示在此创建本地仓库。核对文件清单并完成首次提交，然后通过“Publish repository”发布，取消“Keep this code private”以公开。也可在GitHub网页新建仓库后手动上传本目录的公开文件，两种方式任选其一。
-4. 首次提交应包含源码、机械模型、空白示例、文档和测试。`configs/`中自己运行后产生的真实文件、备份及日志不应出现在提交清单中。
-5. 仓库中的Windows核心检查通过后，从GitHub重新下载源码，在一个新的可写文件夹中体验模拟启动。
-6. 创建`v0.1.0`标签和Release，说明功能、验证范围及限制。将`S288_Calibration_Studio_v0.1.0_Windows_x64.zip`作为Release附件上传，普通用户下载它即可解压使用。源码使用该标签对应的下载；Windows软件包需与标签源码一致并附第三方许可。不要让普通用户误选GitHub自动生成的Source code压缩包。
+## 源码推送范围
 
-## 发布范围
+| 保留内容 | 作用 |
+|---|---|
+| 根目录Python模块、两份requirements、启动脚本 | 程序及运行、构建依赖 |
+| `assets/` | 显示模型与来源说明；机械素材许可独立于软件代码MIT许可 |
+| `configs/examples/` | 空白实机、模拟及绑定模板 |
+| `tests/`及`tests/fixtures/` | 模拟、文件、界面检查及支架设计姿态回归依据 |
+| `docs/`、`README.md`、`CONTRIBUTING.md`及许可文件 | 操作、维护、来源与许可说明 |
+| `tools/build_windows.py` | 从源码构建通用Windows软件 |
+| `tools/package_clean_release.py` | 个人升级维护工具；输出含本机参数，不作为公开包 |
 
-- 支持Windows桌面，包含模拟设备、S288手动调节、软件零位保存与回零、机械模型联动、部署标定导入/导出。
-- 机械模型保留原装配几何，用于显示联动；不提供动力学惯性参数或预设电气ID。素材许可按`assets/README.md`单列。
-- 项目没有提供策略训练、ONNX权重或自动实机部署。
+`build/`、虚拟环境、缓存、日志和`configs/`下的本机文件由`.gitignore`排除。它不会取消已被Git追踪的文件；提交前检查`git status --short`与`git diff --cached --stat`，不要把旧EXE、运行库、个人参数或本地核对报告带入源码。
 
-## 发布前核对
+已有Git历史若曾提交构建产物，当前删除不会从历史中移除它们。检查历史范围后再自行决定沿用原仓库，或从干净源码目录初始化新仓库；不要直接把个人运行目录当作源码上传。
 
-- 仓库内没有个人零位、真实绑定、`.bak`、`.env`和日志。
-- 截图来自模拟模式，图片中没有个人路径或实际标定数据。
-- 公开README如实注明测试平台，未把离线测试描述成实机认证。
-- 如果未来更换模型，先核对其来源与许可，再更新模型说明和兼容性测试。
+## 本地检查与通用软件包
 
-GitHub官方说明：[创建仓库](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository)、[发布版本](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)。
+本仓库没有自动CI工作流。在Windows上安装构建依赖并执行本地检查：
+
+```powershell
+python -m pip install -r requirements-build.txt
+python -B tests/run_checks.py
+python tools/build_windows.py --output build/portable-v0.1.2-current
+```
+
+还应启动“模拟体验.bat”核对修改涉及的界面操作。测试和模拟通过不代表真实舵机运动已经验收。
+
+通用构建输出为`build/portable-v0.1.2-current/dist/S288Studio/`，只带空白示例，不复制本机零位或绑定。公开分发前再次核对`configs/`只有`examples/`，保留全部运行库与第三方许可，并完成[模型素材来源说明](../assets/README.md)中的归属核对。
+
+`S288零位标定工具_发布版_v0.1.2/`是本地个人升级目录，根部只保留`S288Studio/`与`更新内容.txt`；其中的真实15台参数仅供本机使用，不能直接压缩后公开上传。个人打包与验证报告仅留在源码`build/`，不进入通用包或源码提交。

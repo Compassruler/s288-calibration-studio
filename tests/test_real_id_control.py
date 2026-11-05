@@ -19,6 +19,7 @@ class WireSerial:
     """Replies to actual Bus packets, keeping independent encoder values per ID."""
     def __init__(self):
         self.positions = {mid: -.4 + mid*.075 for mid in range(15)}
+        self.output_offsets = {}
         self.history = []
         self.rx = bytearray()
         self.lock = threading.Lock()
@@ -53,7 +54,7 @@ class WireSerial:
                 return len(packet)
             position = round(self.positions[motor]*protocol.RATIO*32768/math.tau)
             reply_id = (motor+1) % 15 if motor in self.wrong_ids else motor
-            output = round((self.positions[motor] % math.tau)*8192/math.tau) % 8192
+            output = round(((self.positions[motor]+self.output_offsets.get(motor, 0)) % math.tau)*8192/math.tau) % 8192
             reply = b"\xfc\xee" + bytes([reply_id | 0x10]) + struct.pack(
                 "<bBBhhiIH2x", 35, 0, 24, 0, 0, position, 0, output)
             self.rx.extend(reply + struct.pack("<I", protocol.crc32(reply[2:22])))
@@ -117,7 +118,7 @@ class RealIdControlTests(unittest.TestCase):
         application = self.application
         self.assertEqual(application.ids.get(), "14")
         for mid, profile in application.profiles.items():
-            profile.update(zero_offset=self.wire.positions[mid]+.02,
+            profile.update(zero_offset=-40+mid, reference_expos=(round((self.wire.positions[mid] % math.tau)*8192/math.tau) % 8192)*math.tau/8192+.02,
                            direction=1 if mid % 2 else -1)
         self.connect("0-14")
         for mid in range(15):
@@ -134,9 +135,10 @@ class RealIdControlTests(unittest.TestCase):
                 self.assertEqual(active[0]["id"], mid)
                 self.assertAlmostEqual(active[0]["target"], measured, places=5)
                 profile = application.profiles[mid]
+                wire_zero = measured+.02  # The saved ExPos reference was .02 above this measured pose.
                 for angle, input_method in ((6.5, "slider"), (-4.2, "typed"), (-4.1, "jog")):
                     start = len(self.wire.sent())
-                    expected = profile["zero_offset"]+profile["direction"]*math.radians(angle)
+                    expected = wire_zero+profile["direction"]*math.radians(angle)
                     if input_method == "slider":
                         application._slide(str(angle))
                     elif input_method == "typed":
@@ -145,7 +147,7 @@ class RealIdControlTests(unittest.TestCase):
                     else:
                         application._jog(.1)
                     self.wait(lambda: any(request["id"] == mid and request["kp"] and
-                              abs(request["target"]-expected) < 1e-5 for request in self.wire.sent()[start:]))
+                              abs(request["target"]-expected) < math.radians(.06) for request in self.wire.sent()[start:]))
                     sent = self.wire.sent()[start:]
                     self.assertTrue(all(request["id"] == mid for request in sent if request["kp"]))
                     self.assertTrue(all(request["torque"] == request["speed"] == 0 for request in sent))

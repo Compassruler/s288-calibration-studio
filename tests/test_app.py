@@ -597,7 +597,9 @@ class AppIntegrationTests(unittest.TestCase):
         self.pump_until(lambda: self.app._capture_all_ids is None and self.path.exists())
         loaded = app.load_profiles(self.path, simulation=True)
         for mid, pose in poses.items():
-            self.assertAlmostEqual(loaded[mid]["zero_offset"], pose)
+            self.assertAlmostEqual(loaded[mid]["reference_expos"], pose % math.tau)
+            expected_anchor = (before[mid]["zero_offset"] + app.wrap_pi(pose-before[mid]["reference_expos"])) if before[mid]["reference_expos"] is not None else pose
+            self.assertAlmostEqual(loaded[mid]["zero_offset"], expected_anchor)
             self.assertFalse(loaded[mid]["verified"])
         self.assertEqual(loaded[3], before[3])
         self.assertEqual(Path(str(self.path)+".bak").read_bytes(), old_file)

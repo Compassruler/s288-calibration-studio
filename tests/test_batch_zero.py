@@ -166,33 +166,34 @@ class BatchZeroTests(unittest.TestCase):
 
 
 class HomeToleranceTests(unittest.TestCase):
-    def test_two_degree_boundary_keeps_speed_and_target_settling_requirements(self):
-        state = {"zero": .5, "target_raw": .5}
-        for degrees in (-2, -1.5, 0, 1.5, 2):
+    def test_five_degree_boundary_keeps_speed_and_target_settling_requirements(self):
+        state = {"zero": .5, "target_raw": .5, "reference_expos": .5}
+        for degrees in (-5, -4.5, -2.68, 0, 2.68, 4.5, 5):
             with self.subTest(degrees=degrees):
                 self.assertTrue(Controller._at_home(state, {
-                    "raw_pos": .5 + math.radians(degrees), "speed": 0}))
-        for degrees in (-2.001, 2.001):
+                    "raw_pos": .5 + math.radians(degrees), "expos": .5 + math.radians(degrees), "speed": 0}))
+        for degrees in (-5.001, 5.001):
             with self.subTest(degrees=degrees):
                 self.assertFalse(Controller._at_home(state, {
-                    "raw_pos": .5 + math.radians(degrees), "speed": 0}))
-        self.assertFalse(Controller._at_home(state, {"raw_pos": .5, "speed": math.radians(2.1)}))
-        self.assertFalse(Controller._at_home(dict(state, target_raw=.501), {"raw_pos": .5, "speed": 0}))
+                    "raw_pos": .5 + math.radians(degrees), "expos": .5 + math.radians(degrees), "speed": 0}))
+        self.assertFalse(Controller._at_home(state, {"raw_pos": .5, "expos": .5, "speed": math.radians(2.1)}))
+        self.assertFalse(Controller._at_home(dict(state, target_raw=.501), {"raw_pos": .5, "expos": .5, "speed": 0}))
 
-    def test_homing_completes_with_one_and_a_half_degree_residual(self):
+    def test_homing_completes_with_four_and_a_half_degree_residual(self):
         worker = Controller(queue.Queue())
         worker._connect("", [0], demo=True)
         self.addCleanup(worker._disconnect)
-        profile = dict(default_profiles()[0], zero_offset=worker.bus.positions[0] + .08)
+        profile = dict(default_profiles()[0], zero_offset=worker.bus.positions[0] + .08,
+                       reference_expos=(worker.bus.positions[0] + .08) % math.tau)
         clock = time.monotonic()
         exchange = worker.bus.exchange
 
         def residual(motor_id, target=0, kp=0, kd=0, **kwargs):
             feedback = exchange(motor_id, target, kp, kd, **kwargs)
             if kp:
-                position = target + math.radians(1.5)
+                position = target + math.radians(4.5)
                 worker.bus.positions[motor_id] = position
-                feedback.update(raw_pos=position, speed=0)
+                feedback.update(raw_pos=position, expos=position % math.tau, speed=0)
             return feedback
 
         with patch("controller.time.monotonic", side_effect=lambda: clock), \
@@ -207,7 +208,7 @@ class HomeToleranceTests(unittest.TestCase):
             self.assertIsNone(worker.homing)
             self.assertIn(0, worker.holding)
             self.assertAlmostEqual(worker.holding[0]["target_raw"], profile["zero_offset"])
-            self.assertAlmostEqual(math.degrees(worker.feedback[0]["raw_pos"]-profile["zero_offset"]), 1.5)
+            self.assertAlmostEqual(math.degrees(worker.feedback[0]["raw_pos"]-profile["zero_offset"]), 4.5)
 
 
 if __name__ == "__main__":

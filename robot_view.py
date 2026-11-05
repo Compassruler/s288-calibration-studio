@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import font as tkfont, messagebox, ttk
 import xml.etree.ElementTree as ET
 from ui import BODY_FONT, PALETTES, FeedbackButton, show_action, theme_widget, workspace_style
+from zero_coordinates import wrap_pi
 
 try:
     import numpy as np
@@ -47,6 +48,17 @@ def _rotation(value):
     return rotation
 
 
+def reference_pose_angles(scene):
+    """CAD joint angles of the physical zero-jig pose, independent of motor feedback."""
+    angles = {}
+    for joint in scene.get("joints", ()):
+        offset = joint.get("zero_pose_offset_rad", 0)
+        if type(offset) not in (int, float) or not math.isfinite(offset):
+            raise ValueError(f"关节支架参考角度必须为有限弧度值：{joint['key']}")
+        angles[joint["key"]] = float(offset)
+    return angles
+
+
 def load_scene(path=MODEL_PATH):
     if np is None:
         raise RuntimeError("3D 预览需要当前 Python 环境中的 NumPy")
@@ -68,6 +80,7 @@ def load_scene(path=MODEL_PATH):
     keys = [j["key"] for j in joints]
     if len(set(names)) != len(names) or len(set(keys)) != len(keys):
         raise ValueError("模型组件或关节名称重复")
+    reference_pose_angles(scene)
     owned = set()
     for component in components:
         transform = _array(component["transform"], 16)
@@ -164,36 +177,70 @@ def validate_bindings(bindings, joint_keys):
     return result
 
 
-def _fresh_feedback(snapshots, motor, now=None):
+def _fresh_feedback(snapshots, motor, now=None, *, output_only=False):
     now = time.monotonic() if now is None else now
     snapshot = snapshots.get(int(motor), {})
     feedback = snapshot.get("feedback", {})
-    raw, stamp = feedback.get("raw_pos"), feedback.get("timestamp")
+    raw = feedback.get("expos") if output_only else feedback.get("model_raw_pos", feedback.get("raw_pos"))
+    stamp = feedback.get("timestamp")
     if (type(raw) not in (int, float) or type(stamp) not in (int, float)
             or not math.isfinite(raw) or not math.isfinite(stamp)
             or not -.05 <= now - stamp <= .6
             or snapshot.get("faulted", False)
+            or output_only and not 0 <= raw < math.tau
+            or not output_only and feedback.get("model_reference_error")
             or feedback.get("mode", 1) != 1
             or any(feedback.get(k, 0) for k in ("fault", "warning", "timeout"))):
         return None
-    return feedback
+    return dict(feedback, raw_pos=raw)
 
 
-def feedback_angles(bindings, snapshots, previous=None, now=None):
+def feedback_angles(bindings, snapshots, previous=None, now=None, *, zero_references=None, zero_offsets=None):
     """Keep the last pose when feedback is absent, faulty or older than 0.6 seconds."""
     now = time.monotonic() if now is None else now
     angles, stale = dict(previous or {}), set()
+    zero_references = zero_references or {}
+    zero_offsets = zero_offsets or {}
     for motor, item in bindings.items():
         reference = item["reference_raw"]
-        if reference is None:
+        output_reference = zero_references.get(str(motor))
+        if output_reference is not None and (type(output_reference) not in (int, float)
+                or not math.isfinite(output_reference) or not 0 <= output_reference <= math.tau):
+            stale.add(int(motor))
+            continue
+        if reference is None and output_reference is None:
+            if snapshots.get(int(motor), {}).get("feedback", {}).get("model_reference_error"):
+                stale.add(int(motor))
+                continue
             angles.pop(item["joint"], None)
             continue
-        feedback = _fresh_feedback(snapshots, motor, now)
+        feedback = _fresh_feedback(snapshots, motor, now, output_only=output_reference is not None)
         if feedback is None:
             stale.add(int(motor))
             continue
-        angles[item["joint"]] = item["direction"] * (feedback["raw_pos"] - reference)
+        if output_reference is not None:
+            offset = zero_offsets.get(item["joint"], 0)
+            if type(offset) not in (int, float) or not math.isfinite(offset):
+                stale.add(int(motor))
+                continue
+            # 支架零位与 CAD 保存姿态不同；静态偏移仅用于显示，不参与舵机控制。
+            angles[item["joint"]] = offset + item["direction"] * wrap_pi(feedback["expos"]-output_reference)
+        else:
+            # 未标定的旧独立模型参考仍使用原坐标，不叠加支架偏移。
+            angles[item["joint"]] = item["direction"] * (feedback["raw_pos"]-reference)
     return angles, stale
+
+
+def _replace_bindings_file(source, destination):
+    """Briefly retry Windows sharing conflicts; keep permanent save failures visible."""
+    for attempt in range(5):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 4:
+                raise
+            time.sleep(.02 * (attempt + 1))
 
 
 def load_bindings(path, joint_keys, *, simulation, fingerprint, compatible_fingerprints=()):
@@ -222,7 +269,7 @@ class _Renderer:
         ET.SubElement(asset, "texture", type="skybox", builtin="gradient", width="256", height="256",
                       rgb1=".055 .075 .083", rgb2=".095 .13 .14")
         ET.SubElement(asset, "material", name="cad", specular=".12", shininess=".3")
-        poses = component_poses(scene, {})
+        poses = component_poses(scene, reference_pose_angles(scene))
         mesh_names = {}
         mesh_assets = {}
         for index, component in enumerate(scene["components"]):
@@ -327,6 +374,7 @@ class RobotView:
         self._binding_rows = {}
         self._demo_generated = set()
         self._reference_save_failed = False
+        self._temporary_expos_references = {}
         self.closed = False
         self._show_binding_when_ready = False
         if self.embedded:
@@ -368,13 +416,18 @@ class RobotView:
             self.loading.destroy()
             self._initialize(scene, model)
         except Exception as exc:
-            if self.renderer:
-                self.renderer.close()
-                self.renderer = None
+            renderer, self.renderer = self.renderer, None
+            message = f"结构预览未能载入：{exc}"
+            if renderer is not None:
+                try:
+                    renderer.close()
+                except Exception as cleanup_error:
+                    # 保留最初的载入错误；原生渲染清理失败不能再次中断 Tk 回调。
+                    message += f"；渲染资源清理异常：{cleanup_error}"
             if self.loading.winfo_exists():
-                self.loading.configure(text=f"结构预览未能载入：{exc}")
+                self.loading.configure(text=message)
             else:
-                ttk.Label(self.window, text=f"结构预览未能载入：{exc}",
+                ttk.Label(self.window, text=message,
                           style="Muted.TLabel", wraplength=450).pack(padx=20, pady=20)
 
     def _initialize(self, scene, model=None):
@@ -433,6 +486,39 @@ class RobotView:
     def binding_options(self):
         return dict(getattr(self, "labels", {}))
 
+    def _software_references(self):
+        callback = getattr(self.app, "model_zero_references", None)
+        return dict(callback()) if callable(callback) else {}
+
+    def _display_references(self):
+        references = self._software_references()
+        references.update(self._temporary_expos_references)
+        return references
+
+    def reset_temporary_references(self, motor_ids=None):
+        if motor_ids is None:
+            self._temporary_expos_references.clear()
+        else:
+            for motor in motor_ids:
+                self._temporary_expos_references.pop(str(motor), None)
+        self._frame_key = None
+        if not self.closed:
+            self._update_reference_button()
+
+    def _update_reference_button(self):
+        if self.closed or not hasattr(self, "reference_button"):
+            return
+        try:
+            if not self.reference_button.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        motor = self.motor.get()
+        text = ("恢复软件零位显示" if motor in self._temporary_expos_references else "临时对齐模型参考"
+                if motor in self._software_references() else "对齐模型参考")
+        if str(self.reference_button.cget("text")) != text:
+            self.reference_button.configure(text=text)
+
     @staticmethod
     def _motor_key(motor_id):
         if str(motor_id) not in {str(i) for i in range(15)}:
@@ -476,7 +562,7 @@ class RobotView:
                 bindings.pop(owner)
                 generated.discard(owner)
             reference = old["reference_raw"] if old and old["joint"] == joint_key else None
-            if reference is None and getattr(self.app, "connected", True):
+            if reference is None and motor not in self._software_references() and getattr(self.app, "connected", True):
                 feedback = _fresh_feedback(self.app.snapshots, motor)
                 if feedback is not None:
                     reference = feedback["raw_pos"]
@@ -502,7 +588,7 @@ class RobotView:
         top = ttk.Frame(shell, style="Plain.TFrame")
         top.pack(fill="x", padx=12 if compact else 16, pady=(10, 5) if compact else (14, 10))
         ttk.Label(top, text="机械结构", style="Section.TLabel").pack(side="left")
-        self.view_mode = tk.StringVar(value="目标预览" if self.embedded else "实际反馈")
+        self.view_mode = tk.StringVar(value="实际反馈")
         mode = ttk.Combobox(top, textvariable=self.view_mode,
                            values=("目标预览", "实际反馈"), width=8, state="readonly",
                            font=BODY_FONT)
@@ -524,7 +610,7 @@ class RobotView:
         self.picture.bind("<MouseWheel>", self._zoom)
         camera_tools = ttk.Frame(viewport, style="Plain.TFrame")
         camera_tools.place(relx=.5, rely=1, anchor="s", y=-3)
-        for key, label in (("front", "正面"), ("side", "侧面"), ("top", "俯视"), ("reset", "复位")):
+        for key, label in (("front", "正面"), ("side", "侧面"), ("top", "俯视"), ("reset", "视角复位")):
             FeedbackButton(camera_tools, text=label, width=0, style="Quiet.TButton",
                        command=lambda choice=key: self._camera_preset(choice)).pack(side="left", padx=2)
         self.transparency_button = FeedbackButton(camera_tools, text="半透明", width=-8,
@@ -565,7 +651,8 @@ class RobotView:
         FeedbackButton(joint_row, text="绑定", style="Primary.TButton", command=self._bind).pack(side="left")
         row2 = ttk.Frame(self.binding_panel, style="Plain.TFrame")
         row2.pack(fill="x", pady=(0, 8))
-        FeedbackButton(row2, text="对齐模型参考", style="Quiet.TButton", command=self._capture).pack(side="left")
+        self.reference_button = FeedbackButton(row2, text="对齐模型参考", style="Quiet.TButton", command=self._capture)
+        self.reference_button.pack(side="left")
         FeedbackButton(row2, text="解除绑定", style="Quiet.TButton", command=self._unbind).pack(side="left", padx=8)
         ttk.Label(row2, text="M 为装配编号", style="Muted.TLabel").pack(side="right")
         table = ttk.Frame(self.binding_panel, style="Plain.TFrame")
@@ -633,6 +720,7 @@ class RobotView:
         self.joint.set(next(label for label, value in self.labels.items() if value == key))
         self.direction.set("−1" if item and item["direction"] == -1 else "+1")
         self._sync_joint_selection()
+        self._update_reference_button()
 
     def _sync_joint_selection(self):
         key = self.labels.get(self.joint.get())
@@ -667,7 +755,7 @@ class RobotView:
                     "model_sha256": self.scene["_fingerprint"],
                     "bindings": {motor: item for motor, item in bindings.items() if motor not in generated}},
                     stream, ensure_ascii=False, indent=2, allow_nan=False)
-            os.replace(name, self.bindings_path)
+            _replace_bindings_file(name, self.bindings_path)
         finally:
             if os.path.exists(name):
                 os.unlink(name)
@@ -677,7 +765,9 @@ class RobotView:
         """先保存候选副本，再提交内存；失败时保留原绑定、参考和画面。"""
         bindings = self._save_bindings(bindings, generated)
         self.bindings, self._demo_generated = bindings, set(generated)
-        active = {item["joint"] for item in bindings.values() if item["reference_raw"] is not None}
+        references = self._software_references()
+        active = {item["joint"] for motor, item in bindings.items()
+                  if item["reference_raw"] is not None or motor in references}
         self.angles = {key: value for key, value in self.angles.items() if key in active}
         self.notice = ""
         self._reference_save_failed = False
@@ -701,7 +791,7 @@ class RobotView:
         bindings = {motor: dict(item) for motor, item in self.bindings.items()}
         changed = []
         for motor, item in bindings.items():
-            if item["reference_raw"] is None:
+            if item["reference_raw"] is None and motor not in self._software_references():
                 feedback = _fresh_feedback(self.app.snapshots, motor)
                 if feedback is not None:
                     item["reference_raw"] = feedback["raw_pos"]
@@ -732,6 +822,29 @@ class RobotView:
     def _capture(self):
         motor = self.motor.get()
         item = self.bindings.get(motor)
+        if motor in self._software_references():
+            if motor in self._temporary_expos_references:
+                self.reset_temporary_references([motor])
+                show_action(self.app.root, f"ID {motor} 已恢复按保存的软件零位显示。", "success")
+                return
+            feedback = _fresh_feedback(self.app.snapshots, motor, output_only=True) if getattr(self.app, "connected", True) else None
+            if not item or feedback is None:
+                show_action(self.app.root, "无法临时对齐模型：请先绑定，并等待正常反馈。", "warning")
+                messagebox.showinfo("无法临时对齐", "请先绑定关节，并等待新鲜正常反馈。", parent=self.window)
+                return
+            if messagebox.askyesno("临时对齐模型参考", "仅将当前姿态临时作为模型显示零位，不修改机械零位、方向或参数文件。\n"
+                    "可用同一按钮恢复；断开、载入配置或重新记录零位后自动恢复软件零位显示。", parent=self.window):
+                feedback = _fresh_feedback(self.app.snapshots, motor, output_only=True) if getattr(self.app, "connected", True) else None
+                if feedback is None:
+                    show_action(self.app.root, "临时模型参考未应用：反馈已过期或连接已断开。", "warning")
+                    return
+                self._temporary_expos_references[motor] = feedback["expos"]
+                self._frame_key = None
+                self._update_reference_button()
+                show_action(self.app.root, f"ID {motor} 临时模型参考已应用；软件零位及参数文件未改。", "success")
+            else:
+                show_action(self.app.root, "已取消临时对齐模型。")
+            return
         feedback = _fresh_feedback(self.app.snapshots, motor) if getattr(self.app, "connected", True) else None
         if not item or feedback is None:
             show_action(self.app.root, "无法记录模型参考：请先绑定，并等待正常反馈。", "warning")
@@ -804,24 +917,40 @@ class RobotView:
         if self.follow.get() and self.motor.get() != str(self.app.selected):
             self._select_id()
         self._initialize_references()
-        self.angles, stale = feedback_angles(self.bindings, self.app.snapshots, self.angles)
+        references = self._display_references()
+        zero_offsets = reference_pose_angles(self.scene)
+        self._update_reference_button()
+        self.angles, stale = feedback_angles(self.bindings, self.app.snapshots, self.angles,
+            zero_references=references, zero_offsets=zero_offsets)
         item = self.bindings.get(self.motor.get())
         selected_key = self.labels.get(self.joint.get())
         selected_joint = next((j for j in self.scene["joints"] if j["key"] == selected_key), None)
         highlighted = selected_joint["motor_component"] if selected_joint else None
         try:
-            self.display_angles = dict(self.angles)
+            self.display_angles = dict(zero_offsets)
+            self.display_angles.update(self.angles)
             preview_motor = None
-            target = getattr(self.app, "preview_target_raw", None)
+            target = getattr(self.app, "preview_target_expos", None)
+            output_preview = callable(target)
+            if not output_preview:
+                # Read-only embedding clients may still supply an explicit model-coordinate preview.
+                target = getattr(self.app, "preview_target_raw", None)
             if self.view_mode.get() == "目标预览" and callable(target):
                 requested = target()
                 if requested is not None:
-                    motor, raw = requested
+                    motor, coordinate = requested
                     binding = self.bindings.get(str(motor))
-                    if (binding and binding["reference_raw"] is not None
-                            and _fresh_feedback(self.app.snapshots, motor) is not None
-                            and math.isfinite(raw)):
-                        self.display_angles[binding["joint"]] = binding["direction"] * (raw-binding["reference_raw"])
+                    output_reference = references.get(str(motor)) if output_preview else None
+                    if (binding and (binding["reference_raw"] is not None or output_reference is not None)
+                            and _fresh_feedback(self.app.snapshots, motor, output_only=output_reference is not None) is not None
+                            and math.isfinite(coordinate)):
+                        if output_reference is not None:
+                            angle = wrap_pi(coordinate-output_reference)
+                        else:
+                            model_coordinate = self.app.model_position_from_expos(motor, coordinate) if output_preview else coordinate
+                            angle = model_coordinate-binding["reference_raw"]
+                        self.display_angles[binding["joint"]] = binding["direction"] * angle + (
+                            zero_offsets.get(binding["joint"], 0) if output_reference is not None else 0)
                         preview_motor = motor
             width, height = max(50, self.picture.winfo_width()), max(50, self.picture.winfo_height())
             if self._viewport_size != (width, height):
@@ -846,15 +975,24 @@ class RobotView:
                 self.picture.configure(image=self.photo)
                 self._frame_key = frame_key
             joint_label = next((j["label"] for j in self.scene["joints"] if item and j["key"] == item["joint"]), "")
+            display_offset = zero_offsets.get(item["joint"], 0) if item and self.motor.get() in references else 0
+            relative_actual = self.angles.get(item["joint"], display_offset)-display_offset if item else 0
             message = (f"ID {self.motor.get()} 未绑定，未参与三维联动；M 是装配编号，与通信 ID 无关" if not item else
-                       f"ID {self.motor.get()} → {joint_label} · 已绑定，等待首次正常反馈设为联动起点" if item["reference_raw"] is None else
-                       f"ID {self.motor.get()} → {joint_label} · 相对角度 {math.degrees(self.angles.get(item['joint'], 0)):+.1f}°")
+                       f"ID {self.motor.get()} → {joint_label} · 已绑定，等待首次正常反馈设为联动起点" if item["reference_raw"] is None and self.motor.get() not in references else
+                       f"ID {self.motor.get()} → {joint_label} · {'相对支架角度' if self.motor.get() in references else '相对角度'} {math.degrees(relative_actual):+.1f}°")
             if preview_motor is not None:
                 binding = self.bindings[str(preview_motor)]
-                message = (f"ID {preview_motor} · 目标预览 {math.degrees(self.display_angles[binding['joint']]):+.1f}°"
-                           f" · 实际反馈 {math.degrees(self.angles.get(binding['joint'], 0)):+.1f}°")
-            if self.motor.get() in self._demo_generated:
+                preview_offset = zero_offsets.get(binding["joint"], 0) if str(preview_motor) in references else 0
+                message = (f"ID {preview_motor} · 目标预览 {math.degrees(self.display_angles[binding['joint']]-preview_offset):+.1f}°"
+                           f" · 实际反馈 {math.degrees(self.angles.get(binding['joint'], preview_offset)-preview_offset):+.1f}°")
+            # 目标预览可能跟随主窗口 ID，而绑定编辑器停在另一个 ID。
+            status_motor = str(preview_motor) if preview_motor is not None else self.motor.get()
+            if status_motor in self._demo_generated:
                 message += " · 模拟示例绑定，与实机 ID 无关"
+            if status_motor in self._temporary_expos_references:
+                message += " · 临时模型参考，可恢复软件零位显示"
+            elif status_motor in references:
+                message += " · 软件零位参考"
             if stale:
                 message += " · 反馈过期／异常，冻结：" + ", ".join(map(str, sorted(stale)))
             if self.notice:
@@ -875,14 +1013,25 @@ class RobotView:
         self.closed = True
         for name in ("after_id", "_notify_id"):
             callback = getattr(self, name)
+            setattr(self, name, None)
             if callback is not None:
-                self.window.after_cancel(callback)
-                setattr(self, name, None)
-        if self.renderer is not None:
-            self.renderer.close()
-            self.renderer = None
-        if self.binding_window is not None and self.binding_window.winfo_exists():
-            self.binding_window.destroy()
-        if self.window.winfo_exists():
-            self.window.destroy()
-
+                try:
+                    self.window.after_cancel(callback)
+                except tk.TclError:
+                    pass
+        renderer, self.renderer = self.renderer, None
+        failure = None
+        try:
+            if renderer is not None:
+                renderer.close()
+        except Exception as exc:
+            failure = exc
+        finally:
+            for window in (self.binding_window, self.window):
+                try:
+                    if window is not None and window.winfo_exists():
+                        window.destroy()
+                except tk.TclError:
+                    pass
+        if failure is not None:
+            raise failure

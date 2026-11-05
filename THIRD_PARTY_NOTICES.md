@@ -8,7 +8,7 @@
 
 ## 机械模型
 
-`assets/robot/`保留本项目使用者提供的机械装配显示快照，包含STL/OBJ网格及关节拓扑。公开整理只移除了本地路径和来源元数据，未重做几何。
+`assets/robot/`保留本项目使用者提供的机械装配显示快照，包含STL/OBJ网格及关节拓扑。网格未重做；显示数据增加了项目零位支架设计的静态姿态偏移及模型兼容指纹白名单，溯源摘要保存在`model.json`的`reference_pose`中，独立几何回归依据保存在`tests/fixtures/jig_zero_targets.json`。
 
 软件代码的MIT许可不自动覆盖机械网格。机械零件涉及各自的作者和来源，本仓库当前未给这些素材指定统一的再许可；发布者需按其来源单列相应授权和署名。具体见[模型说明](assets/README.md)。
 
@@ -23,5 +23,8 @@
 | Pillow | 界面图片与圆角 | [Pillow](https://github.com/python-pillow/Pillow) |
 | NumPy | 三维矩阵运算 | [NumPy](https://github.com/numpy/numpy) |
 | MuJoCo | 只读三维预览渲染 | [MuJoCo](https://github.com/google-deepmind/mujoco) |
+| GLFW | MuJoCo预览的窗口与图形上下文依赖 | [GLFW](https://www.glfw.org/)、[Python绑定](https://github.com/FlorianRhiem/pyGLFW) |
+
+构建工具由`requirements-build.txt`声明，PyInstaller用于生成Windows便携版，不是源码运行所需的额外依赖。构建时保留实际发行包附带的许可，不能用本项目MIT声明替代依赖许可。
 
 字体使用Windows已安装字体，不随源码包分发字体文件。自行打包EXE时应保留随附依赖的许可文件。

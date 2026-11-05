@@ -1,4 +1,5 @@
 """Hand-position, capture/save, reload and return to the recorded joint poses."""
+import copy
 import math
 from pathlib import Path
 import sys
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
-from config import default_profiles, load_profiles
+from config import default_profiles, load_profiles, save_profiles
 from test_real_id_control import WireSerial
 
 
@@ -79,7 +80,9 @@ class ZeroWorkflowTests(unittest.TestCase):
         self.wait(lambda: not application.homing and application.holding_ids == set(poses))
         self.assertIn("回零完成", application.home_text.get())
         for motor_id, pose in poses.items():
-            self.assertAlmostEqual(self.wire.positions[motor_id], pose, places=5)
+            self.assertAlmostEqual(self.wire.positions[motor_id], pose, delta=math.tau/8192)
+            measured_output = application.snapshots[motor_id]["feedback"]["expos"]
+            self.assertAlmostEqual(application._joint_angle(motor_id, measured_output), 0, delta=.05)
         self.assertEqual(self.path.read_bytes(), saved)
         self.assertTrue(application.angle_slider.instate(["disabled"]))
         self.assertTrue(application.capture_button.instate(["disabled"]))
@@ -94,6 +97,40 @@ class ZeroWorkflowTests(unittest.TestCase):
         self.assertFalse(application.homing)
         self.assertIn("未连接", str(self.errors.call_args))
         self.assertFalse(any(request["kp"] for request in self.wire.sent()))
+
+    def test_smooth_home_can_stop_release_then_complete_with_consistent_expos_displays(self):
+        application = self.application
+        zero = self.wire.positions[14]
+        encoder_zero = (round((zero % math.tau)*8192/math.tau) % 8192)*math.tau/8192
+        application.profiles[14].update(zero_offset=-22, reference_expos=encoder_zero)
+        save_profiles(self.path, application.profiles, simulation=False)
+        saved, profiles = self.path.read_bytes(), copy.deepcopy(application.profiles)
+        application._show_profile()
+        with self.wire.lock:
+            self.wire.positions[14] = zero+math.radians(12)
+        self.wait(lambda: float(application.position_text.get().removesuffix("°")) > 11.9)
+        application.current_home_button.invoke()
+        self.wait(lambda: application.homing and application.controller.armed is not None
+                  and .5 < application._joint_angle(14, application.snapshots[14]["feedback"]["expos"]) < 11.5)
+        self.assertFalse(application.home_stop_button.instate(["disabled"]))
+        application.home_stop_button.invoke()
+        self.wait(lambda: not application.homing and not application.holding_ids
+                  and application.controller.armed is None)
+        stopped_position = self.wire.positions[14]
+        after_release, released_at = len(self.wire.sent()), time.monotonic()
+        self.wait(lambda: time.monotonic()-released_at > .2)
+        self.assertEqual(self.wire.positions[14], stopped_position)
+        self.assertTrue(all(packet["kp"] == packet["kd"] == 0 for packet in self.wire.sent()[after_release:]))
+        application.current_home_button.invoke()
+        self.wait(lambda: not application.homing and application.holding_ids == {14})
+        measured = application._joint_angle(14, application.snapshots[14]["feedback"]["expos"])
+        self.assertAlmostEqual(measured, 0, delta=.05)
+        self.assertAlmostEqual(float(application.position_text.get().removesuffix("°")), measured, delta=.01)
+        self.assertAlmostEqual(float(application.tree.item("14", "values")[3]), measured, delta=.01)
+        self.assertAlmostEqual(application.slider_value.get(), measured, delta=.05)
+        self.assertEqual(application.profiles, profiles)
+        self.assertEqual(self.path.read_bytes(), saved)
+        self.errors.assert_not_called()
 
 
 if __name__ == "__main__":

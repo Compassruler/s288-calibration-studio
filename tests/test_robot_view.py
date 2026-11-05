@@ -122,6 +122,110 @@ class PoseTests(unittest.TestCase):
             self.assertEqual(angles, {"knee": .2})
             self.assertEqual(stale, {14})
 
+    def test_calibrated_fifteen_old_model_offsets_are_zero_at_saved_output_zero(self):
+        offsets = (-1.9362, -1.3519, .713, 1.5388, -2.8282, .2505, 1.1037,
+                   -3.619, 4.208, 5.524, -.6964, -2.3575, -2.0067, 3.1672, .6827)
+        negative = {0, 1, 3, 4, 5, 6, 8, 9, 11, 14}
+        bindings, snapshots, references = {}, {}, {}
+        for mid, offset in enumerate(offsets):
+            direction, anchor, reference = (-1 if mid in negative else 1), -30+mid, (.2+mid*.4) % math.tau
+            bindings[str(mid)] = dict(joint=f"joint_{mid}", direction=direction,
+                reference_raw=anchor-math.radians(offset)/direction)
+            snapshots[mid] = dict(feedback=dict(raw_pos=1000-mid*300, model_raw_pos=anchor,
+                expos=reference, timestamp=10))
+            references[str(mid)] = reference
+        original = copy.deepcopy(bindings)
+        angles, stale = view.feedback_angles(bindings, snapshots, now=10, zero_references=references)
+        self.assertFalse(stale)
+        self.assertEqual(angles, {f"joint_{mid}": 0 for mid in range(15)})
+        self.assertEqual(bindings, original)
+
+    def test_calibrated_expos_ignores_old_anchor_cache_and_missing_legacy_reference(self):
+        for direction in (-1, 1):
+            for raw in (-100, 300):
+                for reference in (0.01, math.tau-.01):
+                    output = (reference+math.radians(2.68)) % math.tau
+                    binding = {"14": dict(joint="knee", direction=direction, reference_raw=None)}
+                    snapshots = {14: dict(feedback=dict(raw_pos=raw, model_raw_pos=-999,
+                        model_reference_error="旧缓存缺少参考", expos=output, timestamp=10))}
+                    angles, stale = view.feedback_angles(binding, snapshots, now=10,
+                        zero_references={"14": reference})
+                    self.assertFalse(stale)
+                    self.assertAlmostEqual(angles["knee"], direction*math.radians(2.68))
+                    snapshots[14]["feedback"]["timestamp"] = 9
+                    frozen, stale = view.feedback_angles(binding, snapshots, angles, now=10,
+                        zero_references={"14": reference})
+                    self.assertEqual(frozen, angles)
+                    self.assertEqual(stale, {14})
+
+    def test_missing_output_reference_error_freezes_none_legacy_reference_and_marks_stale(self):
+        binding = {"14": dict(joint="knee", direction=1, reference_raw=None)}
+        snapshots = {14: dict(feedback=dict(raw_pos=-40, expos=.7, timestamp=10,
+            model_reference_error="旧零位缺少 ExPos"))}
+        for previous in ({}, {"knee": .2}):
+            frozen, stale = view.feedback_angles(binding, snapshots, previous, now=10)
+            self.assertEqual(frozen, previous)
+            self.assertEqual(stale, {14})
+        angles, stale = view.feedback_angles(binding, snapshots, now=10, zero_references={"14": .5})
+        self.assertAlmostEqual(angles["knee"], .2)
+        self.assertFalse(stale)
+
+    def test_calibrated_invalid_output_or_reference_freezes_with_all_binding_reference_states(self):
+        for legacy in (None, -80):
+            binding = {"14": dict(joint="knee", direction=-1, reference_raw=legacy)}
+            for invalid in (None, float("nan"), float("inf"), -.1, math.tau):
+                feedback = dict(raw_pos=900, model_raw_pos=-999, expos=invalid, timestamp=10)
+                if invalid is None:
+                    feedback.pop("expos")
+                frozen, stale = view.feedback_angles(binding, {14: dict(feedback=feedback)}, {"knee": .2},
+                    now=10, zero_references={"14": .5})
+                self.assertEqual(frozen, {"knee": .2})
+                self.assertEqual(stale, {14})
+            for invalid_reference in (float("nan"), float("inf"), -.1, math.tau+.1):
+                frozen, stale = view.feedback_angles(binding,
+                    {14: dict(feedback=dict(expos=.7, timestamp=10))}, {"knee": .2},
+                    now=10, zero_references={"14": invalid_reference})
+                self.assertEqual(frozen, {"knee": .2})
+                self.assertEqual(stale, {14})
+
+    def test_reference_pose_offsets_are_optional_finite_radians(self):
+        model = scene()
+        self.assertEqual(view.reference_pose_angles(model), {"hip": 0, "knee": 0})
+        model["joints"][0]["zero_pose_offset_rad"] = math.radians(79)
+        self.assertAlmostEqual(view.reference_pose_angles(model)["hip"], math.radians(79))
+        for value in (True, None, "1", float("nan"), float("inf")):
+            model["joints"][0]["zero_pose_offset_rad"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                view.reference_pose_angles(model)
+
+    def test_jig_offset_only_applies_to_calibrated_feedback_and_stale_keeps_rendered_pose(self):
+        binding = {"14": dict(joint="hip", direction=-1, reference_raw=.5)}
+        snapshot = {14: dict(feedback=dict(raw_pos=.7, expos=.7, timestamp=10))}
+        offset = math.radians(79)
+        actual, stale = view.feedback_angles(binding, snapshot, now=10,
+            zero_references={"14": .5}, zero_offsets={"hip": offset})
+        self.assertFalse(stale)
+        self.assertAlmostEqual(actual["hip"], offset-.2)
+        legacy, stale = view.feedback_angles(binding, snapshot, now=10, zero_offsets={"hip": offset})
+        self.assertFalse(stale)
+        self.assertAlmostEqual(legacy["hip"], -.2)
+        snapshot[14]["feedback"]["timestamp"] = 9
+        frozen, stale = view.feedback_angles(binding, snapshot, actual, now=10,
+            zero_references={"14": .5}, zero_offsets={"hip": offset})
+        self.assertEqual(frozen, actual)
+        self.assertEqual(stale, {14})
+
+    def test_loader_rejects_invalid_jig_offset(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temporary:
+            directory = Path(temporary)
+            tetrahedron(directory / "part.stl")
+            model = scene()
+            model["joints"][0]["zero_pose_offset_rad"] = "79 degrees"
+            filename = directory / "model.json"
+            filename.write_text(json.dumps(model), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "有限弧度"):
+                view.load_scene(filename)
+
     def test_binding_file_rejects_other_mode_or_changed_assets(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temporary:
             path = Path(temporary) / "bindings.json"
@@ -168,6 +272,23 @@ class PoseTests(unittest.TestCase):
 
 
 class RendererTests(unittest.TestCase):
+    def test_compiled_initial_geometry_uses_jig_reference_pose(self):
+        import mujoco
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temporary:
+            directory = Path(temporary)
+            tetrahedron(directory / "part.stl")
+            model = scene()
+            model["joints"][0]["zero_pose_offset_rad"] = math.pi/2
+            model["joints"][1]["zero_pose_offset_rad"] = -.3
+            filename = directory / "model.json"
+            filename.write_text(json.dumps(model), encoding="utf-8")
+            model = view.load_scene(filename)
+            compiled = view._Renderer.compile(model)
+            poses = view.component_poses(model, view.reference_pose_angles(model))
+            for index, component in enumerate(model["components"]):
+                body = mujoco.mj_name2id(compiled, mujoco.mjtObj.mjOBJ_BODY, f"c{index}")
+                np.testing.assert_allclose(compiled.body_pos[body], poses[component["name"]][:3, 3])
+
     def test_mocap_preview_does_not_step_physics(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temporary:
             directory = Path(temporary)
@@ -260,4 +381,3 @@ class ReadOnlyWindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

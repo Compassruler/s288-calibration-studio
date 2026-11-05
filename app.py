@@ -16,6 +16,7 @@ from controller import Controller, HOME_TOLERANCE_DEG
 from deployment import apply_layout, build_calibration, load_layout, write_calibration
 from protocol import validate_baudrate
 from ui import ACTION_STYLES, build_ui, refresh_chrome, update_options, update_text
+from zero_coordinates import joint_angle_rad, wrap_pi
 
 ROOT = Path(__file__).resolve().parent
 
@@ -78,13 +79,14 @@ class CalibratorApp:
         self._model_options = {}
         self._displayed_rows = {}
         self._build()
+        self.root.title("S288 Studio v0.1.2 · ExPos 零位")
         self._refresh_ports()
         self._load_initial()
         self._show_global_gains()
         self._show_profile()
         self.robot_host.bind("<Map>", lambda _: self._ensure_robot_view(), add="+")
         self.root.protocol("WM_DELETE_WINDOW", self._close)
-        self.root.after(50, self._poll)
+        self._poll_after = self.root.after(50, self._poll)
         if demo:
             self.root.after(200, self._connect)
 
@@ -124,15 +126,63 @@ class CalibratorApp:
         if self.robot_view:
             self.robot_view.show_bindings()
 
-    def preview_target_raw(self):
-        """Requested pose for the labelled target preview; never measured feedback."""
+    def preview_target_expos(self):
+        """Requested output-encoder pose; it is never measured feedback or a wire target."""
         if not self._can_slide():
             return None
         p = self.profiles[self.selected]
-        zero = p["zero_offset"]
-        if zero is None:
-            zero = self.snapshots[self.selected]["origin"]
-        return self.selected, zero + p["direction"] * math.radians(self.requested_deg)
+        snap = self.snapshots[self.selected]
+        try:
+            joint_angle_rad(p, snap["feedback"]["expos"], snap.get("origin_expos"))
+        except (KeyError, ValueError):
+            return None
+        zero = p["reference_expos"] if p["reference_expos"] is not None else snap["origin_expos"]
+        return self.selected, (zero + p["direction"] * math.radians(self.requested_deg)) % math.tau
+
+    def model_position_from_expos(self, motor_id, expos, snapshot=None):
+        """Bridge ExPos into the existing model-reference metadata without using live raw."""
+        profile = self.profiles[motor_id]
+        snap = self.snapshots.get(motor_id, {}) if snapshot is None else snapshot
+        difference = joint_angle_rad(dict(profile, direction=1), expos, snap.get("origin_expos"))
+        base = profile["zero_offset"] if profile["zero_offset"] is not None else snap.get("origin")
+        if type(base) not in (float, int) or not math.isfinite(base):
+            raise ValueError("模型尚无参考坐标，请等待设备反馈")
+        return base + difference
+
+    def model_zero_references(self):
+        """Saved output zeros; the viewer adds jig-pose offsets and binding directions."""
+        return {str(mid): profile["reference_expos"] for mid, profile in self.profiles.items()
+                if type(profile["reference_expos"]) in (int, float)
+                and math.isfinite(profile["reference_expos"]) and 0 <= profile["reference_expos"] <= math.tau}
+
+    def _model_snapshot(self, motor_id, snapshot):
+        """Rebuild UI-only legacy model coordinates without changing sensor data."""
+        feedback = dict(snapshot["feedback"])
+        # A loaded/re-recorded profile may invalidate either cached result.
+        feedback.pop("model_raw_pos", None)
+        feedback.pop("model_reference_error", None)
+        try:
+            feedback["model_raw_pos"] = self.model_position_from_expos(motor_id, feedback["expos"], snapshot)
+        except (KeyError, ValueError) as exc:
+            feedback["model_reference_error"] = str(exc)
+        return dict(snapshot, feedback=feedback)
+
+    def _reset_temporary_model_references(self, motor_ids=None):
+        motor_ids = None if motor_ids is None else tuple(motor_ids)
+        for mid, snapshot in tuple(self.snapshots.items()):
+            if motor_ids is not None and mid not in motor_ids:
+                continue
+            self.snapshots[mid] = self._model_snapshot(mid, snapshot)
+        reset = getattr(self.robot_view, "reset_temporary_references", None)
+        if callable(reset):
+            reset(motor_ids)
+
+    @staticmethod
+    def _captured_model_anchor(profile, capture):
+        """Retain the old model coordinate frame when a saved ExPos zero is recorded again."""
+        if profile["zero_offset"] is not None and profile["reference_expos"] is not None:
+            return profile["zero_offset"] + wrap_pi(capture["expos"] - profile["reference_expos"])
+        return capture["zero_offset"]
 
     def _refresh_ports(self):
         try:
@@ -210,6 +260,11 @@ class CalibratorApp:
 
     def _can_slide(self):
         snap = self.snapshots.get(self.selected)
+        if snap:
+            try:
+                joint_angle_rad(self.profiles[self.selected], snap["feedback"]["expos"], snap.get("origin_expos"))
+            except (KeyError, ValueError):
+                return False
         return bool(self.connected and self.armed_id == self.selected and not self.faulted
                     and not getattr(self, "homing", False) and not getattr(self, "holding_ids", ())
                     and not self.closing and snap
@@ -322,9 +377,10 @@ class CalibratorApp:
                 var.set("" if p[key] is None else str(p[key]))
             else:
                 var.set(("+1" if p["direction"] == 1 else "−1") if key == "direction" else str(p[key]))
-        offset = p["zero_offset"]
-        self.zero_text.set("尚未标定 · 本次连接临时0°" if offset is None
-                           else f"已记录零位 {offset:.6f} rad  ·  {'已标记验证' if p['verified'] else '待验证'}")
+        reference = p["reference_expos"]
+        self.zero_text.set(f"已记录 ExPos 零位 {reference:.6f} rad  ·  {'已标记验证' if p['verified'] else '待验证'}"
+                           if reference is not None else "旧零位缺少 ExPos · 请重新记录"
+                           if p["zero_offset"] is not None else "尚未标定 · 本次连接临时0°")
         self._sync_target(self.requested_deg)
         self._model_binding_changed()
         self._preview_model_joint()
@@ -503,19 +559,21 @@ class CalibratorApp:
         except (ValueError, TypeError, OSError) as exc:
             self._error(exc)
 
-    def _joint_angle(self, motor_id, raw):
+    def _joint_angle(self, motor_id, expos):
         p = self.profiles[motor_id]
-        origin = self.snapshots.get(motor_id, {}).get("origin", raw)
-        zero = p["zero_offset"] if p["zero_offset"] is not None else origin
-        return math.degrees(p["direction"] * (raw - zero))
+        origin = self.snapshots.get(motor_id, {}).get("origin_expos")
+        return math.degrees(joint_angle_rad(p, expos, origin))
 
     def _arm(self):
         if not self._apply_profile(silent=True):
             return
         p = self.profiles[self.selected]
+        if p["reference_expos"] is None and p["zero_offset"] is not None:
+            self._error(ValueError("旧零位缺少 ExPos 输出编码器参考，请用零位支架重新记录零位。"))
+            return
         self._arm_pending = True
         self._send("arm", id=self.selected, **{
-            k: p[k] for k in ("kp", "kd", "zero_offset", "direction", "min_deg", "max_deg", "rate_deg_s", "direct_follow")
+            k: p[k] for k in ("kp", "kd", "zero_offset", "reference_expos", "direction", "min_deg", "max_deg", "rate_deg_s", "direct_follow")
         })
         self._render()
 
@@ -530,6 +588,8 @@ class CalibratorApp:
                 raise ValueError(f"目标必须在 {p['min_deg']}° 到 {p['max_deg']}° 之间。")
             if self.armed_id != self.selected:
                 raise ValueError("请先使能当前舵机。")
+            if p["reference_expos"] is None and p["zero_offset"] is not None:
+                raise ValueError("旧零位缺少 ExPos 输出编码器参考，请重新记录零位。")
             self._send("target", id=self.selected, angle_deg=angle)
             self._sync_target(angle)
         except ValueError as exc:
@@ -566,7 +626,7 @@ class CalibratorApp:
 
     def _home_all(self):
         self._begin_home([mid for mid, profile in self.profiles.items()
-                          if profile["zero_offset"] is not None])
+                          if profile["reference_expos"] is not None or profile["zero_offset"] is not None])
 
     def _begin_home(self, motor_ids):
         try:
@@ -577,8 +637,8 @@ class CalibratorApp:
             missing = [mid for mid in motor_ids if mid not in self.monitored]
             if missing:
                 raise ValueError(f"已标定 ID {missing} 未连接，请修改顶部 ID 后重连。")
-            if any(self.profiles[mid]["zero_offset"] is None for mid in motor_ids):
-                raise ValueError("当前舵机尚未记录零位。")
+            if any(self.profiles[mid]["reference_expos"] is None for mid in motor_ids):
+                raise ValueError("舵机尚无完整的 ExPos 零位参考，请用零位支架重新记录零位。")
             if not self._apply_profile(silent=True):
                 return
             self._cancel_slider()
@@ -594,7 +654,7 @@ class CalibratorApp:
 
     def _verified(self):
         p = self.profiles[self.selected]
-        if p["zero_offset"] is None:
+        if p["reference_expos"] is None:
             return
         p["verified"] = True
         self.dirty = True
@@ -611,7 +671,7 @@ class CalibratorApp:
             self._error(ValueError("请先全部释放并等待操作完成；通信异常时先断开，再清除零位。"))
             return
         ids = [mid for mid, p in self.profiles.items()
-               if p["zero_offset"] is not None and (all_joints or mid == self.selected)]
+               if (p["zero_offset"] is not None or p["reference_expos"] is not None) and (all_joints or mid == self.selected)]
         if not ids:
             self._show_action("当前没有可清除的零位记录。", "warning")
             return
@@ -634,11 +694,12 @@ class CalibratorApp:
             self._error(exc)
             return
         self.profiles, self.dirty = profiles, False
+        self._reset_temporary_model_references(ids)
         self._cancel_slider()
         if self.selected in ids:
             self.zero_text.set("尚未标定 · 本次连接临时0°")
             snap = self.snapshots.get(self.selected)
-            self._sync_target(self._joint_angle(self.selected, snap["feedback"]["raw_pos"]) if snap else 0)
+            self._sync_target(self._joint_angle(self.selected, snap["feedback"]["expos"]) if snap else 0)
         self.home_text.set("零位已清除，请手动摆好关节后重新记录。")
         self._log(f"已清除 {scope} 的软件零位并保存至 {self.config_path.name}；未下发运动指令。")
         self._render()
@@ -667,6 +728,7 @@ class CalibratorApp:
         loaded = load_profiles(path, simulation=self.demo.get())
         self.profiles = loaded
         self.dirty = False
+        self._reset_temporary_model_references()
         self._show_global_gains()
         self._show_profile()
         self._log(f"已加载：{path}。加载配置没有下发运动目标。")
@@ -711,6 +773,7 @@ class CalibratorApp:
         kind = event["type"]
         mid = event.get("id")
         if kind == "connected":
+            self._reset_temporary_model_references()
             self._cancel_slider()
             self.connected = True
             self.connecting = False
@@ -726,6 +789,7 @@ class CalibratorApp:
             self._log("模拟设备已连接，不使用串口。" if event["demo"] else
                       f"总线已连接。所有目标默认禁用。通信波特率 {event.get('baudrate', 6000000) / 1e6:g} Mbps。")
         elif kind == "snapshot":
+            event = self._model_snapshot(mid, event)
             self.snapshots[mid] = event
             self.faulted = event.get("faulted", self.faulted)
             if self.faulted:
@@ -741,7 +805,7 @@ class CalibratorApp:
         elif kind == "armed":
             self._arm_pending = False
             self.armed_id = mid
-            self.requested_deg = self._joint_angle(mid, event["raw_pos"])
+            self.requested_deg = self._joint_angle(mid, event["expos"])
             if mid == self.selected:
                 self._sync_target(self.requested_deg)
             self._log(f"ID {mid} 已从当前位置接管。")
@@ -757,20 +821,21 @@ class CalibratorApp:
             if not event["confirmed"]:
                 self._show_action(f"ID {mid} 释放未获确认，请检查设备状态。", "error")
         elif kind == "held":
-            self.requested_deg = self._joint_angle(mid, event["raw_pos"])
+            self.requested_deg = self._joint_angle(mid, event["expos"])
             if mid == self.selected:
                 self._sync_target(self.requested_deg)
             self._show_action(f"ID {mid} 已切换为当前位置保持。", "success")
         elif kind == "captured":
             p = self.profiles[mid]
-            p.update(zero_offset=event["zero_offset"], reference_expos=event["expos"],
+            p.update(zero_offset=self._captured_model_anchor(p, event), reference_expos=event["expos"],
                      calibrated_at=event["calibrated_at"], verified=False)
+            self._reset_temporary_model_references([mid])
             self.dirty = True
             if mid == self.selected:
                 self.requested_deg = 0.0
                 self.target.set("0.0")
                 self._show_profile()
-            self._log(f"ID {mid} 软件零位已记录为 {event['zero_offset']:.7f} rad；尚未保存到文件。")
+            self._log(f"ID {mid} ExPos 零位已记录为 {event['expos']:.7f} rad；尚未保存到文件。")
             if self._capture_save_id == mid:
                 self._capture_save_id = None
                 try:
@@ -792,7 +857,7 @@ class CalibratorApp:
                 updated = {mid: dict(profile) for mid, profile in self.profiles.items()}
                 for capture in captures:
                     motor_id = capture["id"]
-                    updated[motor_id].update(zero_offset=capture["zero_offset"],
+                    updated[motor_id].update(zero_offset=self._captured_model_anchor(updated[motor_id], capture),
                         reference_expos=capture["expos"], calibrated_at=capture["calibrated_at"], verified=False)
                     updated[motor_id] = validate_profile(updated[motor_id])
                 save_profiles(self.config_path, updated, simulation=self.demo.get())
@@ -800,13 +865,17 @@ class CalibratorApp:
                 self._error(exc)
                 return
             self.profiles, self.dirty = updated, False
+            self._reset_temporary_model_references(expected)
             if self.selected in expected:
                 self._sync_target(0)
             self._show_profile()
             self.home_text.set(f"全部 {len(expected)} 台零位已记录并保存 · 回零容差 ±{HOME_TOLERANCE_DEG:g}°")
             self._log(f"已一次记录并保存全部 {len(expected)} 台已连接舵机的零位；未下发运动目标。")
         elif kind == "capture_cancelled":
-            self._capture_all_ids = None
+            if event.get("scope", "all") == "all":
+                self._capture_all_ids = None
+            elif self._capture_save_id == event.get("id"):
+                self._capture_save_id = None
             self._log(event["message"])
         elif kind == "home_state":
             self.homing = event["active"]
@@ -816,6 +885,7 @@ class CalibratorApp:
             self.home_text.set(event["message"])
             self._log(event["message"])
         elif kind == "disconnected":
+            self._reset_temporary_model_references()
             self._cancel_slider()
             self.connected = self.connecting = False
             self.armed_id = None
@@ -831,8 +901,11 @@ class CalibratorApp:
         elif kind == "error":
             self._arm_pending = False
             self._cancel_slider()
-            self._capture_save_id = None
-            self._capture_all_ids = None
+            action = event.get("action")
+            if action is None or action == "capture_zero" and event.get("id", self._capture_save_id) == self._capture_save_id:
+                self._capture_save_id = None
+            if action is None or action == "capture_all_zero" or event.get("scope") == "all":
+                self._capture_all_ids = None
             self.connecting = False
             if not self.connected:
                 self.connection_text.set("连接未完成")
@@ -844,22 +917,30 @@ class CalibratorApp:
             self._stopped = True
 
     def _poll(self):
-        processed = False
+        self._poll_after = None
         try:
-            for _ in range(200):
-                event = self.events.get_nowait()
-                processed = True
-                self._handle(event)
-        except queue.Empty:
-            pass
-        if not self.root.winfo_exists():
-            return
-        if processed or self.connected or self.connecting or self.closing:
-            self._render()
-        if self.closing and (self._stopped or not self.controller.is_alive()):
-            self.root.destroy()
-            return
-        self.root.after(50, self._poll)
+            processed = False
+            try:
+                for _ in range(200):
+                    event = self.events.get_nowait()
+                    processed = True
+                    self._handle(event)
+            except queue.Empty:
+                pass
+            if not self.root.winfo_exists():
+                return
+            if self.closing and (self._stopped or not self.controller.is_alive()):
+                self.root.destroy()
+                return
+            if not self.closing and (processed or self.connected or self.connecting):
+                self._render()
+        finally:
+            # Display cleanup failures must not strand the shutdown/stopped handshake.
+            try:
+                if self.root.winfo_exists():
+                    self._poll_after = self.root.after(50, self._poll)
+            except tk.TclError:
+                pass
 
     def _render(self):
         now = time.monotonic()
@@ -870,22 +951,37 @@ class CalibratorApp:
             state = "未连接" if mid not in self.monitored else "待反馈"
             angle = "—"
             if snap:
-                state = "零位保持" if mid in self.holding_ids else "使能" if mid == self.armed_id else "已标定" if p["zero_offset"] is not None else "未标定"
-                angle = f"{self._joint_angle(mid, snap['feedback']['raw_pos']):.2f}"
+                state = "零位保持" if mid in self.holding_ids else "使能" if mid == self.armed_id else "已标定" if p["reference_expos"] is not None else "未标定"
+                try:
+                    angle = f"{self._joint_angle(mid, snap['feedback']['expos']):.2f}"
+                except (KeyError, ValueError):
+                    state = "缺少 ExPos"
                 if not fresh:
                     state = "反馈过期"
             row = (mid, p["name"], state, angle)
             if self._displayed_rows.get(mid) != row:
                 self.tree.item(str(mid), values=row)
                 self._displayed_rows[mid] = row
-        calibrated = self.profiles[self.selected]["zero_offset"] is not None
+        calibrated = self.profiles[self.selected]["reference_expos"] is not None
         update_text(self.position_caption, "零位角度 / °" if calibrated else "临时角度 / °")
         snap = self.snapshots.get(self.selected)
         feedback = snap["feedback"] if snap else None
         fresh = bool(self.connected and feedback and now - feedback["timestamp"] <= .3)
-        update_text(self.position_text, f"{self._joint_angle(self.selected, feedback['raw_pos']):+.2f}°" if fresh else "—")
+        coordinate_error = None
+        position = "—"
+        if fresh:
+            try:
+                measured_angle = self._joint_angle(self.selected, feedback['expos'])
+                position = f"{measured_angle:+.2f}°"
+                if not control_busy:
+                    self._sync_target(measured_angle, cancel_pending=False)
+            except (KeyError, ValueError) as exc:
+                coordinate_error = str(exc)
+        update_text(self.position_text, position)
         if self.connected and self.faulted:
             update_text(self.mode_text, "通信异常已锁止 · 检查设备后断开并重新连接")
+        elif coordinate_error:
+            update_text(self.mode_text, coordinate_error)
         elif self.homing:
             update_text(self.mode_text, "正在按记录的零位逐个回零")
         elif self.holding_ids:
@@ -926,22 +1022,22 @@ class CalibratorApp:
         selected_armed = self.armed_id == self.selected
         batch = self.homing or bool(self.holding_ids)
         available = self.connected and not self.closing and not self.faulted
-        moving = fresh and selected_armed and available and not batch
-        update_options(self.arm_button, state="normal" if fresh and not control_busy and available else "disabled")
+        moving = fresh and selected_armed and available and not batch and coordinate_error is None
+        update_options(self.arm_button, state="normal" if fresh and not control_busy and available and coordinate_error is None else "disabled")
         for w in [self.target_entry, self.angle_slider, self.execute_button, self.hold_button, *self.jog_buttons]:
             update_options(w, state="normal" if moving else "disabled")
         update_options(self.release_button, state="normal" if self.connected and self.selected in self.monitored and not batch else "disabled")
         update_options(self.stop_button, state="normal" if self.connected else "disabled")
         update_options(self.capture_button, state="normal" if fresh and not control_busy and available else "disabled")
         update_options(self.capture_all_button, state="normal" if available and not control_busy and self.monitored else "disabled")
-        update_options(self.verify_button, state="normal" if fresh and not control_busy and available and self.profiles[self.selected]["zero_offset"] is not None else "disabled")
+        update_options(self.verify_button, state="normal" if fresh and not control_busy and available and calibrated else "disabled")
         ready = available and not control_busy
-        update_options(self.current_home_button, state="normal" if ready and fresh and self.profiles[self.selected]["zero_offset"] is not None else "disabled")
-        update_options(self.home_all_button, state="normal" if ready and any(p["zero_offset"] is not None for p in self.profiles.values()) else "disabled")
+        update_options(self.current_home_button, state="normal" if ready and fresh and calibrated else "disabled")
+        update_options(self.home_all_button, state="normal" if ready and any(p["reference_expos"] is not None for p in self.profiles.values()) else "disabled")
         update_options(self.home_stop_button, state="normal" if self.connected and batch else "disabled")
         can_clear = not (control_busy or self.connecting or self.closing or self.connected and self.faulted)
-        update_options(self.clear_zero_button, state="normal" if can_clear and self.profiles[self.selected]["zero_offset"] is not None else "disabled")
-        update_options(self.clear_all_zeros_button, state="normal" if can_clear and any(p["zero_offset"] is not None for p in self.profiles.values()) else "disabled")
+        update_options(self.clear_zero_button, state="normal" if can_clear and any(self.profiles[self.selected][key] is not None for key in ("zero_offset", "reference_expos")) else "disabled")
+        update_options(self.clear_all_zeros_button, state="normal" if can_clear and any(p["zero_offset"] is not None or p["reference_expos"] is not None for p in self.profiles.values()) else "disabled")
         for key, widget in self.settings_widgets:
             model_field = key in {"model_joint", "model_direction"}
             disabled = control_busy or model_field and not self._model_options
@@ -963,11 +1059,23 @@ class CalibratorApp:
         if self.dirty and not messagebox.askyesno("关闭工具", "零位或设置尚未保存。放弃改动并关闭？", parent=self.root):
             return
         self.closing = True
-        if self.robot_view:
-            self.robot_view.close()
-        self._cancel_slider()
-        self.connection_text.set("正在请求零力矩并关闭…")
         self.controller.send("shutdown")
+        self.connection_text.set("正在请求零力矩并关闭…")
+        if getattr(self, "_poll_after", None) is None:
+            self._poll_after = self.root.after(0, self._poll)
+        try:
+            self._cancel_slider()
+        except tk.TclError:
+            self._slider_after = self._slider_pending = None
+        viewer, self.robot_view = self.robot_view, None
+        if viewer:
+            try:
+                viewer.close()
+            except Exception as exc:
+                try:
+                    self._log(f"三维预览关闭异常：{exc}；设备关闭流程继续。")
+                except tk.TclError:
+                    pass
 
 
 def main():
@@ -982,4 +1090,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

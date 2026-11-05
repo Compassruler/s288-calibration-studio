@@ -23,6 +23,7 @@ class HomingTests(unittest.TestCase):
         for motor_id in self.worker.ids:
             profile = default_profiles()[motor_id]
             profile.update(zero_offset=self.bus.positions[motor_id] + .08,
+                           reference_expos=(self.bus.positions[motor_id] + .08) % math.tau,
                            direction=-1 if motor_id == 7 else 1)
             self.profiles[motor_id] = profile
         self.addCleanup(self.close_worker)
@@ -63,7 +64,7 @@ class HomingTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 profiles = copy.deepcopy(self.profiles)
                 if invalid == "missing_zero":
-                    profiles[14]["zero_offset"] = None
+                    profiles[14].update(zero_offset=None, reference_expos=None)
                 elif invalid == "zero_outside_limits":
                     profiles[14].update(min_deg=1, max_deg=30)
                 elif invalid == "current_outside_limits":
@@ -116,10 +117,12 @@ class HomingTests(unittest.TestCase):
             self.worker._start_home({0: self.profiles[0]})
             state = self.worker.armed
             state["target_raw"] = state["zero"]
-            self.worker.feedback[0].update(speed=0, timestamp=clock)
+            self.worker.feedback[0].update(raw_pos=state["zero"]+math.radians(6),
+                                           expos=(state["reference_expos"]+math.radians(6)) % math.tau,
+                                           speed=0, timestamp=clock)
             self.worker._check_home_progress()
             self.assertIsNone(self.worker.homing["stable_since"])
-            self.worker.feedback[0].update(raw_pos=state["zero"], speed=math.radians(3))
+            self.worker.feedback[0].update(raw_pos=state["zero"], expos=state["reference_expos"], speed=math.radians(3))
             self.worker._check_home_progress()
             self.assertIsNone(self.worker.homing["stable_since"])
             self.bus.positions[0] = state["zero"]
@@ -187,7 +190,9 @@ class HomingTests(unittest.TestCase):
             self.worker.holding[0] = state
             self.worker.armed = None
             self.worker.homing.update(pending=[], deadline=clock+5, stable_since=None)
-            self.worker.feedback[0].update(raw_pos=state["zero"]+math.radians(3), speed=0, timestamp=clock)
+            self.worker.feedback[0].update(raw_pos=state["zero"]+math.radians(6),
+                                           expos=(state["reference_expos"]+math.radians(6)) % math.tau,
+                                           speed=0, timestamp=clock)
             self.worker._check_home_progress()
             clock += .3
             self.worker.feedback[0]["timestamp"] = clock
@@ -195,6 +200,7 @@ class HomingTests(unittest.TestCase):
             self.assertIsNotNone(self.worker.homing)
             self.assertIsNone(self.worker.homing["stable_since"])
             self.worker.feedback[0]["raw_pos"] = state["zero"]
+            self.worker.feedback[0]["expos"] = state["reference_expos"]
             self.worker._check_home_progress()
             clock += .26
             self.worker.feedback[0]["timestamp"] = clock
@@ -222,6 +228,28 @@ class HomingTests(unittest.TestCase):
         self.assertEqual(self.worker.holding, {})
         self.assertTrue(all(request["kp"] == request["kd"] == 0
                             for request in list(self.bus.history)[before:]))
+
+    def test_release_then_new_home_still_sends_initial_hold_before_trajectory(self):
+        pose = self.bus.positions[7]
+        started = threading.Event()
+        initial_packets = []
+        original = self.worker._home_status
+
+        def observe_status(message):
+            original(message)
+            if message.startswith("正在回零："):
+                initial_packets.extend(request for request in self.bus.history if request["kp"] > 0)
+                started.set()
+
+        self.worker.send("release_all")
+        self.worker.send("home", profiles={7: self.profiles[7]})
+        with patch.object(self.worker, "_home_status", side_effect=observe_status):
+            self.worker.start()
+            self.assertTrue(started.wait(1), "new home was not started")
+            self.close_worker()
+        self.assertEqual(len(initial_packets), 1)
+        self.assertEqual(initial_packets[0]["id"], 7)
+        self.assertEqual(initial_packets[0]["raw_target"], pose)
 
     def test_disconnect_and_manual_actions_do_not_resume_a_home_plan(self):
         self.worker._start_home(self.profiles)

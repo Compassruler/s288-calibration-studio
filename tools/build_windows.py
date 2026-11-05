@@ -80,5 +80,5 @@ def build(output):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=ROOT / "build" / "portable")
+    parser.add_argument("--output", type=Path, default=ROOT / "build" / "portable-v0.1.2-current")
     build(parser.parse_args().output)

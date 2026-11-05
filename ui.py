@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import font as tkfont, ttk
 from guide import show_guide
 from rounded_theme import apply_rounding
+from controller import HOME_TOLERANCE_DEG
 
 THEME_PATH = Path(__file__).resolve().parent / "configs" / "appearance.json"
 BODY_FONT = ("Microsoft YaHei UI", 12)
@@ -758,7 +759,7 @@ def build_ui(self):
     self.home_all_button.pack(side="left", padx=(0, 6))
     self.home_stop_button = FeedbackButton(home_actions, text="停止并释放", style="Release.TButton", command=self._cancel_home)
     self.home_stop_button.pack(side="left")
-    ttk.Label(home_actions, text="回零到位容差 ±2°", style="Muted.TLabel").pack(side="right")
+    ttk.Label(home_actions, text=f"回零到位容差 ±{HOME_TOLERANCE_DEG:g}°", style="Muted.TLabel").pack(side="right")
 
     history = ttk.Frame(workspace, style="Card.TFrame", padding=(12, 8))
     history.grid(row=5, column=0, sticky="nsew", pady=(8, 0))
@@ -788,11 +789,10 @@ def build_ui(self):
 
 
 def refresh_chrome(self):
-    count = sum(p["zero_offset"] is not None for p in self.profiles.values())
+    count = sum(p["reference_expos"] is not None for p in self.profiles.values())
     update_text(self.calibration_text, f"{count} / 15 已记录")
     update_options(self.profile_progress, value=count)
     badge = "Fault" if self.faulted and self.connected else (
         "Demo" if self.connected and self.demo.get() else "Live" if self.connected else "Idle"
     )
     update_options(self.badge, style=badge+".Badge.TLabel")
-

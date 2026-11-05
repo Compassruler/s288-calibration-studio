@@ -72,7 +72,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_reverse_direction_and_offset_transform_without_immediate_jump(self):
         zero = self.bus.positions[14]
-        self.arm(zero_offset=zero, direction=-1)
+        self.arm(zero_offset=zero, reference_expos=zero % math.tau, direction=-1)
         self.worker._set_target(14, 10)
         state = self.worker.armed
         self.assertAlmostEqual(state["requested_raw"], zero - math.radians(10))
@@ -129,6 +129,45 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(released)
         self.assertIsNone(self.worker.armed)
         self.assertTrue(all(item["kp"] == item["kd"] == 0 for item in list(self.bus.history)[before:]))
+
+    def test_release_then_new_enable_and_target_still_sends_initial_hold(self):
+        pose = self.bus.positions[14]
+        target = pose + math.radians(10)
+        reached_target = threading.Event()
+        original = self.bus.exchange
+
+        def observe_exchange(*args, **kwargs):
+            feedback = original(*args, **kwargs)
+            request = self.bus.history[-1]
+            if request["kp"] > 0 and abs(request["raw_target"] - target) < 1e-12:
+                reached_target.set()
+            return feedback
+
+        # All three commands can arrive before the communication thread gets
+        # its next turn. The release must not suppress the new enable's hold.
+        self.worker.send("release_all")
+        self.worker.send("arm", id=14, kp=.3, kd=.02, zero_offset=None,
+                         direction=1, min_deg=-30, max_deg=30, rate_deg_s=5,
+                         direct_follow=True)
+        self.worker.send("target", id=14, angle_deg=10)
+        with patch.object(self.bus, "exchange", side_effect=observe_exchange):
+            self.worker.start()
+            self.assertTrue(reached_target.wait(1), "new target was not processed")
+            self.close_worker()
+        active = [request for request in self.bus.history if request["kp"] > 0]
+        self.assertGreaterEqual(len(active), 2)
+        self.assertEqual(active[0]["raw_target"], pose)
+        self.assertAlmostEqual(active[1]["raw_target"], target)
+
+    def test_unhandled_urgent_release_still_blocks_active_packet(self):
+        self.arm(direct_follow=True)
+        self.worker._set_target(14, 20)
+        before = len(self.bus.history)
+        target_before = self.worker.armed["target_raw"]
+        self.worker.send("release_all")
+        self.worker._poll_one(14)
+        self.assertEqual(len(self.bus.history), before)
+        self.assertEqual(self.worker.armed["target_raw"], target_before)
 
     def test_capture_requires_stable_fresh_disabled_feedback(self):
         cases = [{"speed": .1}, {"span": .01}, {"age": 1}]

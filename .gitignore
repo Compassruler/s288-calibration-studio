@@ -1,0 +1,38 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.build-venv/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build outputs, portable runtimes and local verification reports
+/build/
+/dist/
+
+# Keep public templates; never commit machine calibration or bindings
+/configs/*
+!/configs/examples/
+!/configs/examples/**
+
+# Local credentials, editor state and temporary files
+.env
+.env.*
+!.env.example
+!.env.sample
+.idea/
+.vscode/
+*.log
+*.tmp
+*.bak
+*.orig
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

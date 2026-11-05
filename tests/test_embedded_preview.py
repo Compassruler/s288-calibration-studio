@@ -86,7 +86,7 @@ class EmbeddedPreviewTests(unittest.TestCase):
         main = threading.get_ident()
         self.assertNotEqual(PreparedRenderer.compile_threads[-1], main)
         self.assertEqual(PreparedRenderer.render_threads[-1], main)
-        self.assertEqual(self.viewer.view_mode.get(), "目标预览")
+        self.assertEqual(self.viewer.view_mode.get(), "实际反馈")
         self.assertFalse(self.viewer.binding_panel.winfo_manager())
         self.viewer.show_bindings()
         self.assertEqual(self.viewer.binding_panel.winfo_manager(), "pack")
@@ -122,6 +122,7 @@ class EmbeddedPreviewTests(unittest.TestCase):
             render.assert_called_once()  # A settled static frame still reuses its cache.
 
     def test_target_preview_does_not_replace_actual_feedback_or_write_software_zero(self):
+        self.viewer.view_mode.set("目标预览")
         self.viewer._bind()
         self.tick()
         self.assertEqual(self.viewer.angles["hip"], 0)
@@ -170,6 +171,7 @@ class EmbeddedPreviewTests(unittest.TestCase):
         self.errors.assert_not_called()
 
     def test_releasing_or_losing_fresh_feedback_cancels_target_overlay(self):
+        self.viewer.view_mode.set("目标预览")
         self.viewer._bind()
         self.tick()
         self.assertNotEqual(self.viewer.display_angles["hip"], 0)
@@ -181,6 +183,44 @@ class EmbeddedPreviewTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.viewer.display_angles["hip"], 0)
         self.assertIn("冻结", self.viewer.status.get())
+
+    def test_target_preview_reference_note_follows_preview_motor_not_binding_editor(self):
+        self.app.model_zero_references = lambda: {"14": .56, "0": .3}
+        self.app.snapshots[14]["feedback"]["expos"] = .56
+        self.app.snapshots[0] = dict(feedback=dict(expos=.3, timestamp=time.monotonic()))
+        self.app.preview_target_expos = lambda: (14, .76)
+        self.viewer.view_mode.set("目标预览")
+        self.viewer.follow.set(False)
+        self.viewer.motor.set("0")
+        self.viewer._temporary_expos_references = {"14": .56}
+        self.tick()
+        self.assertIn("ID 14 · 目标预览", self.viewer.status.get())
+        self.assertIn("临时模型参考", self.viewer.status.get())
+        self.assertNotIn("软件零位参考", self.viewer.status.get())
+        self.viewer._temporary_expos_references = {"0": .3}
+        self.tick()
+        self.assertIn("软件零位参考", self.viewer.status.get())
+        self.assertNotIn("临时模型参考", self.viewer.status.get())
+
+    def test_load_failure_still_detaches_renderer_when_native_cleanup_also_fails(self):
+        with patch.object(view.RobotView, "_prepare"), \
+                patch.object(view.RobotView, "_build", side_effect=ValueError("invalid preview")), \
+                patch.object(PreparedRenderer, "close", side_effect=RuntimeError("native cleanup failed")):
+            loading = view.RobotView(self.app, parent=self.host)
+            try:
+                loading.window.after_cancel(loading.after_id)
+                model = scene()
+                model["_fingerprint"] = "load-failure"
+                loading._prepared.put((model, object(), None))
+                loading._finish_prepare()
+                self.assertIsNone(loading.renderer)
+                self.assertIsNone(loading.after_id)
+                messages = [str(widget.cget("text")) for widget in loading.window.winfo_children()
+                            if isinstance(widget, ttk.Label)]
+                self.assertTrue(any("invalid preview" in message for message in messages))
+                self.assertTrue(any("native cleanup failed" in message for message in messages))
+            finally:
+                loading.close()
 
     def test_close_during_loading_does_not_initialize_gl_or_leave_tk_callback(self):
         gate = threading.Event()
@@ -216,6 +256,75 @@ class EmbeddedPreviewTests(unittest.TestCase):
                 self.assertIsNone(reference())
             finally:
                 gate.set()
+
+    def test_calibrated_jig_offset_is_rendered_but_footer_and_target_are_relative(self):
+        offset = math.radians(79)
+        self.viewer.scene["joints"][0]["zero_pose_offset_rad"] = offset
+        self.app.model_zero_references = lambda: {"14": .56}
+        self.app.snapshots[14]["feedback"]["expos"] = .56
+        self.app.preview_target_expos = lambda: (14, .56+math.radians(20))
+        self.tick()
+        self.assertAlmostEqual(self.viewer.angles["hip"], offset)
+        self.assertIn("相对支架角度 +0.0°", self.viewer.status.get())
+        self.viewer.view_mode.set("目标预览")
+        self.tick()
+        self.assertAlmostEqual(self.viewer.display_angles["hip"], offset+math.radians(20))
+        self.assertIn("目标预览 +20.0°", self.viewer.status.get())
+        self.assertIn("实际反馈 +0.0°", self.viewer.status.get())
+        pending, texts = [self.viewer.window], []
+        while pending:
+            widget = pending.pop()
+            if "text" in widget.keys():
+                texts.append(str(widget.cget("text")))
+            pending.extend(widget.winfo_children())
+        self.assertIn("视角复位", texts)
+
+    def test_no_data_reference_pose_uses_offsets_and_stale_preserves_previous_pose(self):
+        offsets = {"hip": math.radians(79), "knee": -math.radians(60)}
+        for joint in self.viewer.scene["joints"]:
+            joint["zero_pose_offset_rad"] = offsets[joint["key"]]
+        self.viewer.bindings, self.viewer.angles, self.app.snapshots = {}, {}, {}
+        self.tick()
+        self.assertEqual(self.viewer.display_angles, offsets)
+        expected = view.component_poses(self.viewer.scene, offsets)
+        for part, pose in self.viewer.renderer.poses.items():
+            np.testing.assert_allclose(pose, expected[part])
+        self.viewer.bindings = {"14": dict(joint="hip", direction=1, reference_raw=None)}
+        self.app.model_zero_references = lambda: {"14": .56}
+        self.viewer.angles = {"hip": offsets["hip"]+.2}
+        self.app.snapshots = {14: dict(feedback=dict(expos=.56, timestamp=time.monotonic()-2))}
+        self.tick()
+        self.assertAlmostEqual(self.viewer.display_angles["hip"], offsets["hip"]+.2)
+        self.assertIn("冻结", self.viewer.status.get())
+
+    def test_temporary_calibrated_reference_uses_same_jig_offset_without_persistence(self):
+        offset = math.radians(79)
+        self.viewer.scene["joints"][0]["zero_pose_offset_rad"] = offset
+        self.app.model_zero_references = lambda: {"14": .56}
+        self.app.snapshots[14]["feedback"]["expos"] = .76
+        self.app.preview_target_expos = lambda: (14, .56)
+        with patch.object(view.messagebox, "askyesno", return_value=True), \
+                patch.object(self.viewer, "_persist", side_effect=AssertionError("temporary display cannot save")):
+            self.viewer._capture()
+            self.tick()
+            self.assertAlmostEqual(self.viewer.angles["hip"], offset)
+            self.viewer.view_mode.set("目标预览")
+            self.tick()
+            self.assertAlmostEqual(self.viewer.display_angles["hip"], offset-.2)
+            self.assertIn("目标预览 -11.5°", self.viewer.status.get())
+            self.viewer._capture()
+            self.viewer.view_mode.set("实际反馈")
+            self.tick()
+            self.assertAlmostEqual(self.viewer.angles["hip"], offset+.2)
+
+    def test_uncalibrated_legacy_reference_does_not_add_jig_offset(self):
+        self.viewer.scene["joints"][0]["zero_pose_offset_rad"] = math.radians(79)
+        self.viewer._bind()
+        reference = self.viewer.bindings["14"]["reference_raw"]
+        self.app.snapshots[14]["feedback"]["raw_pos"] = reference+.2
+        self.tick()
+        self.assertAlmostEqual(self.viewer.angles["hip"], .2)
+        self.assertIn("相对角度 +11.5°", self.viewer.status.get())
 
 
 if __name__ == "__main__":

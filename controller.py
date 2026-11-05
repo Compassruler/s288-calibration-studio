@@ -10,11 +10,15 @@ import time
 from protocol import (Bus, DEFAULT_BAUDRATE, POSITION_LIMIT, ProtocolError, SimBus,
                       validate_baudrate, validate_id)
 from config import validate_profile
+from zero_coordinates import circular_mean, joint_angle_rad, wrap_pi
+from homing_motion import HomingMotion
 
 
 FEEDBACK_MAX_AGE_S = 0.25  # 主机反馈有效期；超时后不能继续发送位置驱动。
 ACTIVE_LIMIT_MARGIN_DEG = 2.0  # 仅容纳运行中的小幅跟随超调，不放宽目标角度限位。
-HOME_TOLERANCE_DEG = 2.0  # 回零验收允许的实测位置偏差；控制目标仍是精确的已保存零位。
+HOME_TOLERANCE_DEG = 5.0  # 回零验收允许的实测位置偏差；控制目标仍是精确的已保存零位。
+# These commands both outrank normal requests and invalidate older targets.
+_URGENT_ACTIONS = frozenset({"hold", "release", "release_all", "disconnect", "shutdown"})
 
 
 class HomeTimeout(Exception):
@@ -45,13 +49,14 @@ class Controller(threading.Thread):
         self.homing = None
         self.feedback = {}
         self.origins = {}
+        self.output_origins = {}
         self.history = {}
         self.faulted = False
         self._other_index = 0
         self._running = True
 
     def send(self, action, **kwargs):
-        urgent = action in {"hold", "release", "release_all", "disconnect", "shutdown"}
+        urgent = action in _URGENT_ACTIONS
         with self._queue_lock:
             if urgent:
                 self._generation += 1
@@ -74,6 +79,7 @@ class Controller(threading.Thread):
         self._emit(
             "snapshot", id=motor_id, feedback=dict(feedback),
             armed=state is not None, faulted=self.faulted, origin=self.origins[motor_id],
+            origin_expos=self.output_origins[motor_id],
             target_raw=state["target_raw"] if state else None,
             requested_raw=state["requested_raw"] if state else None,
             holding=held is not None,
@@ -85,8 +91,11 @@ class Controller(threading.Thread):
         for name in ("raw_pos", "expos", "speed", "torque", "voltage", "temp", "timestamp"):
             if not math.isfinite(feedback[name]):
                 raise ProtocolError(f"设备反馈 {name} 无效")
+        if not 0 <= feedback["expos"] < math.tau:
+            raise ProtocolError("设备输出编码器角度超出单圈范围")
         self.feedback[motor_id] = dict(feedback)
         self.origins.setdefault(motor_id, feedback["raw_pos"])
+        self.output_origins.setdefault(motor_id, feedback["expos"])
         self.history.setdefault(motor_id, deque(maxlen=100)).append(dict(feedback))
 
     @staticmethod
@@ -165,6 +174,7 @@ class Controller(threading.Thread):
             validate_id(motor_id)
         self.feedback.clear()
         self.origins.clear()
+        self.output_origins.clear()
         self.history.clear()
         self.armed = None
         self.faulted = False
@@ -205,28 +215,40 @@ class Controller(threading.Thread):
             raise ValueError("只能使能当前选中的舵机")
         # 手动控制和批量回零共用配置校验，参数范围只在 config.py 维护。
         profile = validate_profile({"id": motor_id, "direct_follow": False, **settings})
+        self._check_single_turn_limits(profile)
         kp, kd, rate = profile["kp"], profile["kd"], profile["rate_deg_s"]
         low, high = profile["min_deg"], profile["max_deg"]
         direction = profile["direction"]
-        zero = profile["zero_offset"]
-        zero = self.origins[motor_id] if zero is None else zero
-        if abs(zero) > POSITION_LIMIT:  # 未标定时的临时零位来自反馈，也要能编码为目标。
-            raise ValueError("零位超出协议范围")
         feedback = self._zero_exchange(motor_id)
-        angle = direction * math.degrees(feedback["raw_pos"] - zero)
+        angle_rad = joint_angle_rad(profile, feedback["expos"], self.output_origins[motor_id])
+        angle = math.degrees(angle_rad)
         if not low <= angle <= high:
             raise ValueError(f"当前位置 {angle:.2f}° 已超出设定范围，不能使能")
+        # This alignment belongs only to the current enable interval.  Saved
+        # raw zero is metadata; ExPos determines the actual mechanical pose.
+        zero = feedback["raw_pos"] - direction * angle_rad
+        if abs(zero) > POSITION_LIMIT:
+            raise ValueError("本次上电的零位目标超出协议范围")
+        reference = profile["reference_expos"]
+        if reference is None:
+            reference = self.output_origins[motor_id]
         now = time.monotonic()
         # 第一个非零增益包必须保持刚读到的位置，避免使能瞬间跳到旧目标。
         self.armed = {
             "id": motor_id, "kp": kp, "kd": kd, "zero": zero,
             "direction": direction, "min_deg": low, "max_deg": high,
+            "reference_expos": reference,
             "rate": math.radians(rate), "last_move": now,
             "direct_follow": profile["direct_follow"],
             "target_raw": feedback["raw_pos"], "requested_raw": feedback["raw_pos"],
         }
         self._poll_one(motor_id)
-        self._emit("armed", id=motor_id, raw_pos=feedback["raw_pos"])
+        self._emit("armed", id=motor_id, raw_pos=feedback["raw_pos"], expos=feedback["expos"])
+
+    @staticmethod
+    def _check_single_turn_limits(profile):
+        if profile["min_deg"] <= -180 or profile["max_deg"] >= 180:
+            raise ValueError("单圈输出编码器要求角度限位严格位于 -180° 与 180° 之间")
 
     def _set_target(self, motor_id, angle_deg):
         self._require_connected(motor_id)
@@ -256,7 +278,7 @@ class Controller(threading.Thread):
         self.armed["requested_raw"] = feedback["raw_pos"]
         self.armed["last_move"] = time.monotonic()
         self._snapshot(motor_id)
-        self._emit("held", id=motor_id, raw_pos=feedback["raw_pos"])
+        self._emit("held", id=motor_id, raw_pos=feedback["raw_pos"], expos=feedback["expos"])
         self._emit("status", message=f"ID {motor_id} 已取消剩余目标，保持当前位置")
 
     def _release(self, motor_id, recover=True):
@@ -329,10 +351,14 @@ class Controller(threading.Thread):
         if max(positions) - min(positions) > math.radians(0.2):
             raise ValueError(f"ID {motor_id}：角度尚未稳定，不能记录零位")
         zero = sum(positions) / len(positions)
+        mean_expos, _ = circular_mean([sample["expos"] for sample in samples])
+        deviations = [wrap_pi(sample["expos"] - mean_expos) for sample in samples]
+        if max(deviations) - min(deviations) > math.radians(.2):
+            raise ValueError(f"ID {motor_id}：输出编码器角度尚未稳定，不能记录零位")
         if abs(zero) > POSITION_LIMIT or not 0 <= latest["expos"] <= 2 * math.pi:
             raise ValueError(f"ID {motor_id}：零位或输出编码器参考值超出协议范围")
         return dict(
-            id=motor_id, zero_offset=zero, expos=latest["expos"],
+            id=motor_id, zero_offset=zero, expos=mean_expos,
             calibrated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         )
 
@@ -396,12 +422,14 @@ class Controller(threading.Thread):
         for motor_id, source in sorted(profiles.items()):
             self._require_connected(motor_id)
             profile = validate_profile(source)
-            if profile["id"] != motor_id or profile["zero_offset"] is None:
+            if profile["id"] != motor_id or (profile["reference_expos"] is None and profile["zero_offset"] is None):
                 raise ValueError(f"ID {motor_id} 尚未记录零位")
+            self._check_single_turn_limits(profile)
             if not profile["min_deg"] <= 0 <= profile["max_deg"]:
                 raise ValueError(f"ID {motor_id} 的零位不在角度限位内")
             feedback = self._zero_exchange(motor_id, cancelable=True)
             self._check_home_range(profile, feedback)
+            self._home_raw_zero(profile, feedback)
             prepared.append(profile)
         if self._cancel_pending():
             raise ValueError("回零已取消")
@@ -415,9 +443,17 @@ class Controller(threading.Thread):
 
     @staticmethod
     def _check_home_range(profile, feedback):
-        angle = profile["direction"] * math.degrees(feedback["raw_pos"]-profile["zero_offset"])
+        angle = math.degrees(joint_angle_rad(profile, feedback["expos"]))
         if not profile["min_deg"] <= angle <= profile["max_deg"]:
             raise ValueError(f"ID {profile['id']} 当前位置 {angle:.2f}° 超出限位，不能回零")
+
+    @staticmethod
+    def _home_raw_zero(profile, feedback):
+        """Use the same ExPos-to-wire alignment for batch preflight and startup."""
+        zero = feedback["raw_pos"] - wrap_pi(feedback["expos"] - profile["reference_expos"])
+        if abs(zero) > POSITION_LIMIT:
+            raise ValueError(f"ID {profile['id']} 本次上电的零位目标超出协议范围")
+        return zero
 
     def _next_home(self):
         plan = self.homing
@@ -434,15 +470,19 @@ class Controller(threading.Thread):
         feedback = self._zero_exchange(motor_id, cancelable=True)
         self._check_home_range(profile, feedback)
         now = time.monotonic()
-        raw, zero = feedback["raw_pos"], profile["zero_offset"]
+        raw = feedback["raw_pos"]
+        zero = self._home_raw_zero(profile, feedback)
         self.armed = dict(id=motor_id, kp=profile["kp"], kd=profile["kd"],
             zero=zero, direction=profile["direction"], min_deg=profile["min_deg"],
+            reference_expos=profile["reference_expos"],
             max_deg=profile["max_deg"], rate=math.radians(profile["rate_deg_s"]),
             last_move=now, direct_follow=False, target_raw=raw, requested_raw=raw)
         self._poll_one(motor_id)  # First nonzero-gain packet holds the measured pose.
         self.armed["requested_raw"] = zero
+        motion = HomingMotion(raw, zero, self.armed["rate"])
+        self.armed.update(home_motion=motion, home_elapsed=0.0, last_move=time.monotonic())
         plan["stable_since"] = None
-        plan["deadline"] = now + abs(raw-zero)/self.armed["rate"] + 5
+        plan["deadline"] = self.armed["last_move"] + motion.duration + 5
         self._home_status(f"正在回零：ID {motor_id} · {plan['done']+1}/{plan['total']}")
 
     def _check_home_progress(self):
@@ -467,6 +507,8 @@ class Controller(threading.Thread):
         settled = self._at_home(state, feedback)
         plan["stable_since"] = (plan["stable_since"] or now) if settled else None
         if plan["stable_since"] is not None and now-plan["stable_since"] >= .25:
+            state.pop("home_motion", None)
+            state.pop("home_elapsed", None)
             self.holding[state["id"]] = state
             self.armed = None
             plan["done"] += 1
@@ -477,13 +519,33 @@ class Controller(threading.Thread):
 
     @staticmethod
     def _home_deviation(state, feedback):
-        error = state["direction"] * math.degrees(feedback["raw_pos"] - state["zero"])
+        error = state["direction"] * math.degrees(wrap_pi(feedback["expos"] - state["reference_expos"]))
         speed = state["direction"] * math.degrees(feedback["speed"])
-        return f"ID {state['id']}：位置偏差 {error:+.2f}°，速度 {speed:+.2f}°/s"
+        tracking = math.degrees(state["target_raw"] - feedback["raw_pos"])
+        motion = state.get("home_motion")
+        timing = (f"；轨迹={state['home_elapsed']:.3f}/{motion.duration:.3f}s" if motion is not None else "")
+        return (
+            f"ID {state['id']}：位置偏差 {error:+.2f}°，速度 {speed:+.2f}°/s；"
+            f"输出距零={error:+.2f}°，控制位置跟踪差={tracking:+.2f}°（目标−实测）；"
+            f"raw实测={feedback['raw_pos']:.6f}rad，raw目标={state['target_raw']:.6f}rad，raw名义零位={state['zero']:.6f}rad；"
+            f"ExPos={feedback['expos']:.6f}rad，E0={state['reference_expos']:.6f}rad；"
+            f"实测扭矩={feedback['torque']:+.4f}N·m，V={feedback['voltage']:.2f}，"
+            f"KP={state['kp']:g}，KD={state['kd']:g}；"
+            f"状态(mode/fault/warning/timeout)={feedback['mode']}/{feedback['fault']}/{feedback['warning']}/{feedback['timeout']}"
+            f"{timing}"
+        )
+
+    def _report_home_endpoint(self, state, feedback):
+        """Log cached endpoint feedback once; this never sends another packet."""
+        motion = state.get("home_motion")
+        if motion is None or state["home_elapsed"] < motion.duration or state.get("home_endpoint_logged", False):
+            return
+        state["home_endpoint_logged"] = True
+        self._emit("status", message="回零轨迹目标已发到终点，实际到位仍按输出编码器验收；" + self._home_deviation(state, feedback))
 
     @staticmethod
     def _at_home(state, feedback):
-        return (abs(feedback["raw_pos"]-state["zero"]) <= math.radians(HOME_TOLERANCE_DEG) + 1e-12
+        return (abs(wrap_pi(feedback["expos"]-state["reference_expos"])) <= math.radians(HOME_TOLERANCE_DEG) + 1e-12
                 and abs(feedback["speed"]) <= math.radians(2)
                 and abs(state["target_raw"]-state["zero"]) < 1e-9)
 
@@ -494,25 +556,44 @@ class Controller(threading.Thread):
             raise ProtocolError(f"ID {motor_id} 活动反馈过期或时间异常，不能继续位置控制")
         if not self._healthy(feedback):
             raise self._status_error(motor_id, feedback)
-        angle = state["direction"] * math.degrees(feedback["raw_pos"] - state["zero"])
+        try:
+            angle = math.degrees(joint_angle_rad(state, feedback["expos"]))
+        except ValueError as exc:
+            raise ProtocolError(f"ID {motor_id} 输出编码器反馈不可用于控制：{exc}") from exc
         if not state["min_deg"] - ACTIVE_LIMIT_MARGIN_DEG <= angle <= state["max_deg"] + ACTIVE_LIMIT_MARGIN_DEG:
             raise ProtocolError(
                 f"ID {motor_id} 实测角度 {angle:.2f}° 超出活动限位 "
                 f"[{state['min_deg']:.1f}°, {state['max_deg']:.1f}°]"
                 f"（保护容差 {ACTIVE_LIMIT_MARGIN_DEG:g}°）"
             )
+        # Position commands still use the fixed continuous coordinate selected
+        # at enable time.  Protect that active interval against a counter reset
+        # without treating released hand movement as a lost mechanical zero.
+        raw_angle = state["direction"] * math.degrees(feedback["raw_pos"] - state["zero"])
+        if not state["min_deg"] - ACTIVE_LIMIT_MARGIN_DEG <= raw_angle <= state["max_deg"] + ACTIVE_LIMIT_MARGIN_DEG:
+            raise ProtocolError(
+                f"ID {motor_id} 活动连续位置 {raw_angle:.2f}° 超出控制坐标范围；"
+                "可能在使能期间断电或计数发生变化，请释放并重新连接后再使能"
+            )
 
     def _poll_one(self, motor_id):
         state = self.armed if self.armed and self.armed["id"] == motor_id else self.holding.get(motor_id)
         if state:
-            if self._urgent.is_set():
+            # A release handled earlier in this command batch may leave the
+            # flag set until the loop ends.  It must not suppress the first
+            # hold-position packet of a new, explicitly queued enable request.
+            if self._urgent.is_set() and self._cancel_pending():
                 return
             self._check_active_feedback(state, self.feedback.get(motor_id))
             now = time.monotonic()
             dt = min(0.08, max(0.0, now - state["last_move"]))
             delta = state["requested_raw"] - state["target_raw"]
             # 限速仅逐步改变位置目标；协议的期望角速度仍为 0。
-            if state["direct_follow"]:
+            motion = state.get("home_motion")
+            if motion is not None:
+                state["home_elapsed"] = min(motion.duration, state["home_elapsed"] + dt)
+                state["target_raw"] = motion.position_at(state["home_elapsed"])
+            elif state["direct_follow"]:
                 state["target_raw"] = state["requested_raw"]
             else:
                 state["target_raw"] += max(-state["rate"] * dt, min(state["rate"] * dt, delta))
@@ -520,6 +601,8 @@ class Controller(threading.Thread):
             feedback = self.bus.exchange(motor_id, state["target_raw"], state["kp"], state["kd"])
             self._remember(motor_id, feedback)
             self._check_active_feedback(state, feedback)
+            if motion is not None:
+                self._report_home_endpoint(state, feedback)
         else:
             self._zero_exchange(motor_id)
         self._snapshot(motor_id)
@@ -588,10 +671,10 @@ class Controller(threading.Thread):
                         _, sequence, generation, action, data = self.commands.get_nowait()
                     except queue.Empty:
                         break
-                    if generation != self._generation and action not in {"hold", "release", "release_all", "disconnect", "shutdown"}:
-                        if action == "capture_all_zero":
-                            self._emit("capture_cancelled", scope="all",
-                                       message="全部零位记录已取消，未记录任何零位")
+                    if generation != self._generation and action not in _URGENT_ACTIONS:
+                        if action in {"capture_all_zero", "capture_zero"}:
+                            self._emit("capture_cancelled", scope="all" if action == "capture_all_zero" else "current",
+                                       id=data.get("id"), message="零位记录已取消，未记录任何零位")
                         continue
                     if action == "target" and sequence != self._latest_targets.get(data.get("id")):
                         continue
@@ -600,7 +683,8 @@ class Controller(threading.Thread):
                     except ValueError as exc:
                         if action == "home":
                             self._home_status(f"回零未启动：{exc}")
-                        self._emit("error", id=data.get("id"), message=str(exc))
+                        self._emit("error", id=data.get("id"), action=action,
+                                   scope="all" if action == "capture_all_zero" else "current", message=str(exc))
                     except Exception as exc:
                         self._fault(exc)
                     if not self._running:

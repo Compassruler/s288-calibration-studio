@@ -167,7 +167,8 @@ class AppActionFeedbackTests(unittest.TestCase):
         sent.assert_called_once_with("arm", id=14)
         self.assertEqual(self.application.action_text.get(), "正在使能当前舵机…")
         self.assertNotIn("已从当前位置接管", self.application.action_text.get())
-        self.application._handle({"type": "armed", "id": 14, "raw_pos": .79})
+        self.application.snapshots[14] = {"origin_expos": .79}
+        self.application._handle({"type": "armed", "id": 14, "raw_pos": -42, "expos": .79})
         self.assertIn("已从当前位置接管", self.application.action_text.get())
         self.application._handle({"type": "error", "id": 14, "message": "未收到反馈"})
         self.assertEqual(self.application.action_text.get(), "操作未完成：未收到反馈")

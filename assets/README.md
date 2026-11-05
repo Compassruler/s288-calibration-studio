@@ -1,8 +1,18 @@
 # 机械结构显示素材
 
-本目录保留工具原来使用的机械结构模型：239个组件、49个网格及15条关节链。STL/OBJ网格与原文件逐一核对一致；整理时仅移除了本地CAD路径、来源配置和历史绑定指纹。
+本目录沿用工具原机械结构的239个组件、49个STL/OBJ网格及15条显示关节链；不附带原生CAD文件、本机电气ID绑定或舵机标定值。网格与组件原位矩阵、轴心、转轴沿用原显示快照。
 
 这是显示模型，不是用于训练的完整MuJoCo动力学XML。实际ID、控制方向、零位、质量和惯量不能从它自动推断，显示绑定由使用者逐个设置。
+
+## 零位支架显示参考
+
+`model.json`的`reference_pose`记录设计数据摘要、原模型摘要及固定版本的[14关节训练模型来源](https://github.com/zj281136/microduck-s288/blob/0b0af0dae07baeeeecf8d3598f98a3d15d55f855/software/training/src/mjlab_microduck/robot/microduck/robot_walk_s288_v1.xml)。每关节的`zero_pose_offset_rad`是相对原CAD保存姿态的静态显示偏移；左右髋Yaw固定壳体归入机身固定组，避免随输出侧错误旋转。它们不改变机械零位、方向、限位或增益。
+
+`tests/fixtures/jig_zero_targets.json`保留独立设计目标矩阵和设计摘要，供`test_jig_reference.py`核对显示运动学。该文件是几何回归依据，不含真实ExPos零位。原始设计转换工具依赖本机CAD资料，不作为运行依赖分发。
+
+`compatible_bindings_sha256`仅白名单保留已核对几何及关节对应的旧模型指纹，使旧绑定可原值载入；它不是接受任意模型的通配规则，也不包含真实ID绑定。
+
+支架参考来自14个训练关节的q=0，不等于站立HOME或原CAD保存姿态；第15嘴部沿用原CAD嘴部参考。设计几何核对不替代实物装配、承载或闭嘴位置验收。
 
 ## 许可范围
 

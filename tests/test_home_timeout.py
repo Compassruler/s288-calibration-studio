@@ -1,6 +1,7 @@
 """A missed saved pose releases safely without hiding real bus failures."""
 
 from pathlib import Path
+import math
 import queue
 import sys
 import threading
@@ -42,6 +43,7 @@ class HomeTimeoutTests(unittest.TestCase):
         self.seen[worker] = []
         profiles = {mid: dict(default_profiles()[mid],
                              zero_offset=worker.bus.positions[mid] + .08,
+                             reference_expos=(worker.bus.positions[mid] + .08) % math.tau,
                              direction=-1 if mid == 7 else 1)
                     for mid in ids}
         worker._start_home(profiles)
@@ -65,7 +67,7 @@ class HomeTimeoutTests(unittest.TestCase):
     @staticmethod
     def arm_settings(profile):
         return {key: profile[key] for key in (
-            "kp", "kd", "zero_offset", "direction", "min_deg", "max_deg",
+            "kp", "kd", "zero_offset", "reference_expos", "direction", "min_deg", "max_deg",
             "rate_deg_s", "direct_follow")}
 
     def test_thread_timeout_discards_old_motion_keeps_polling_and_allows_manual_arm(self):
@@ -124,10 +126,12 @@ class HomeTimeoutTests(unittest.TestCase):
         for mid, profile in profiles.items():
             zero = profile["zero_offset"]
             held = dict(template, id=mid, zero=zero, direction=profile["direction"],
+                        reference_expos=profile["reference_expos"],
                         target_raw=zero, requested_raw=zero)
             worker.holding[mid] = held
-            bus.positions[mid] = zero + (.05 if mid == 7 else 0)
-            worker.feedback[mid].update(raw_pos=bus.positions[mid], speed=.1 if mid == 7 else 0,
+            bus.positions[mid] = zero + (math.radians(6) if mid == 7 else 0)
+            worker.feedback[mid].update(raw_pos=bus.positions[mid], expos=bus.positions[mid] % math.tau,
+                                        speed=.1 if mid == 7 else 0,
                                         timestamp=time.monotonic())
         worker.armed = None
         worker.homing["pending"].clear()
@@ -135,7 +139,7 @@ class HomeTimeoutTests(unittest.TestCase):
             worker._check_home_progress()
         self.assertIn("整组回零超时", str(failure.exception))
         self.assertIn("ID 7", str(failure.exception))
-        self.assertIn("位置偏差 -2.86°", str(failure.exception))
+        self.assertIn("位置偏差 -6.00°", str(failure.exception))
         self.assertIn("速度 -5.73°/s", str(failure.exception))
         before = len(bus.history)
         worker._home_failed(failure.exception)
